@@ -3,7 +3,6 @@ from Utilities.ConfigurationUtils import Config
 from Utilities.LoggingUtils import Logger
 from Processing.DataProcessor import DataProcessor
 from Processing.DataStorage import DataStorage
-from Processing.IndicatorValidator import IndicatorValidator
 
 
 class ProcessorFactory:
@@ -16,9 +15,6 @@ class ProcessorFactory:
 
     def create_data_storage(self) -> DataStorage:
         return DataStorage(self.config, self.logger)
-
-    def create_indicator_validator(self) -> IndicatorValidator:
-        return IndicatorValidator(self.config, self.logger)
 
     def create_feature_analyzer(self) -> FeatureAnalyzer:
         storage = self.create_data_storage()

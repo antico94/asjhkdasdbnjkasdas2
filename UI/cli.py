@@ -14,7 +14,6 @@ class TradingBotCLI:
         self.main_choices = [
             Choice("Fetch Data", AppMode.FETCH_DATA.value),
             Choice("Process Data", AppMode.PROCESS_DATA.value),
-            Choice("Validate Data", AppMode.VALIDATE_DATA.value),
             Choice("Analyze Features", AppMode.ANALYZE_FEATURES.value),
             Choice("Train Model", AppMode.TRAIN_MODEL.value),
             Choice("Backtest Strategy", AppMode.BACKTEST.value),

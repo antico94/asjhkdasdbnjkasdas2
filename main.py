@@ -14,7 +14,6 @@ from Fetching.FetcherFactory import FetcherFactory
 from Processing.ProcessorFactory import ProcessorFactory
 from UI.cli import TradingBotCLI
 from UI.Constants import AppMode
-from Utilities.PathResolver import PathResolver
 
 
 @inject
@@ -53,8 +52,6 @@ def main(
             handle_fetch_data(cli, logger, fetcher_factory)
         elif action == AppMode.PROCESS_DATA.value:
             handle_process_data(cli, logger, processor_factory)
-        elif action == AppMode.VALIDATE_DATA.value:
-            handle_validate_data(logger, processor_factory)
         elif action == AppMode.ANALYZE_FEATURES.value:
             handle_analyze_features(cli, logger, processor_factory)
         else:
@@ -155,16 +152,6 @@ def handle_process_data(cli: TradingBotCLI, logger: Logger, processor_factory: P
                 logger.info("Dataset selection cancelled")
                 print("Dataset selection cancelled")
 
-
-def handle_validate_data(logger: Logger, processor_factory: ProcessorFactory) -> None:
-    logger.info("Validating all datasets")
-    print("Starting to validate all datasets...")
-
-    processor = processor_factory.create_data_processor()
-    validator = processor_factory.create_indicator_validator()
-
-    # Validate training, validation, and testing datasets for XAUUSD
-    validate_datasets(processor, validator, logger, "XAUUSD", "H1", ["training", "validation", "testing"])
 
 
 def handle_analyze_features(cli: TradingBotCLI, logger: Logger, processor_factory: ProcessorFactory) -> None:
