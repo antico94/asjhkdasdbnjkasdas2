@@ -43,3 +43,9 @@ class Container(containers.DeclarativeContainer):
         PathResolver,
         config=config
     )
+
+    # Feature service
+    feature_service = providers.Callable(
+        lambda factory: factory.create_feature_service(),
+        factory=processor_factory
+    )

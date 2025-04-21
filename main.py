@@ -12,6 +12,7 @@ from Utilities.ConfigurationUtils import Config
 from Utilities.LoggingUtils import Logger
 from Fetching.FetcherFactory import FetcherFactory
 from Processing.ProcessorFactory import ProcessorFactory
+from Processing.FeatureService import FeatureService
 from UI.cli import TradingBotCLI
 from UI.Constants import AppMode
 
@@ -22,6 +23,7 @@ def main(
         logger: Logger = Provide[Container.logger],
         fetcher_factory: FetcherFactory = Provide[Container.fetcher_factory],
         processor_factory: ProcessorFactory = Provide[Container.processor_factory],
+        feature_service: FeatureService = Provide[Container.feature_service],
 ) -> None:
     logger.info('Application started')
     # Log configuration values
@@ -53,7 +55,7 @@ def main(
         elif action == AppMode.PROCESS_DATA.value:
             handle_process_data(cli, logger, processor_factory)
         elif action == AppMode.ANALYZE_FEATURES.value:
-            handle_analyze_features(cli, logger, processor_factory)
+            handle_analyze_features(cli, logger, processor_factory, feature_service)
         else:
             logger.info(f'Selected action: {action}')
 
@@ -153,8 +155,12 @@ def handle_process_data(cli: TradingBotCLI, logger: Logger, processor_factory: P
                 print("Dataset selection cancelled")
 
 
-
-def handle_analyze_features(cli: TradingBotCLI, logger: Logger, processor_factory: ProcessorFactory) -> None:
+def handle_analyze_features(
+        cli: TradingBotCLI,
+        logger: Logger,
+        processor_factory: ProcessorFactory,
+        feature_service: FeatureService
+) -> None:
     """Handle feature analysis flow"""
     while True:
         analyze_action = cli.analyze_features_menu()
@@ -164,24 +170,29 @@ def handle_analyze_features(cli: TradingBotCLI, logger: Logger, processor_factor
             break
 
         elif analyze_action == "run_analysis":
-            logger.info("Running feature analysis")
-            print("Starting feature analysis...")
+            logger.info("Running comprehensive feature analysis")
+            print("Starting comprehensive feature analysis...")
 
             feature_analyzer = processor_factory.create_feature_analyzer()
 
-            # Run analysis for default settings
+            # Run dual analysis (both direction and magnitude)
             try:
-                selected_features = feature_analyzer.run_complete_analysis(
+                results = feature_analyzer.run_dual_analysis(
                     pair="XAUUSD",
                     timeframe="H1",
                     dataset_type="training",
-                    target_col="future_price_1"
+                    direction_target="direction_1",
+                    magnitude_target="future_price_1"
                 )
 
-                if selected_features:
+                if results and (results.get("direction") or results.get("magnitude")):
                     print(f"✓ Feature analysis completed successfully")
-                    print(f"  - Selected {len(selected_features)} optimal features")
-                    print(f"  - Results saved to FeatureAnalysis directory")
+                    print(f"  - Selected {len(results.get('direction', []))} features for direction model")
+                    print(f"  - Selected {len(results.get('magnitude', []))} features for magnitude model")
+                    print(f"  - Results saved to database and FeatureAnalysis directory")
+
+                    # Display top features
+                    display_top_features(feature_service, "XAUUSD", "H1")
                 else:
                     print("✗ Feature analysis failed to select features")
             except Exception as e:
@@ -199,18 +210,32 @@ def handle_analyze_features(cli: TradingBotCLI, logger: Logger, processor_factor
 
                 feature_analyzer = processor_factory.create_feature_analyzer()
 
+                # Determine if this is a direction or magnitude target
+                is_classification = "direction" in analysis_config['target'] or "signal" in analysis_config['target']
+                model_type = "direction" if is_classification else "magnitude"
+
                 try:
+                    # Run single target analysis
                     selected_features = feature_analyzer.run_complete_analysis(
                         pair=analysis_config['pair'],
                         timeframe=analysis_config['timeframe'],
                         dataset_type="training",
-                        target_col=analysis_config['target']
+                        target_col=analysis_config['target'],
+                        is_classification=is_classification
                     )
 
                     if selected_features:
                         print(f"✓ Feature analysis completed successfully")
-                        print(f"  - Selected {len(selected_features)} optimal features")
-                        print(f"  - Results saved to FeatureAnalysis directory")
+                        print(f"  - Selected {len(selected_features)} optimal features for {model_type} model")
+                        print(f"  - Results saved to database and FeatureAnalysis directory")
+
+                        # Display top features
+                        display_top_features(
+                            feature_service,
+                            analysis_config['pair'],
+                            analysis_config['timeframe'],
+                            model_type
+                        )
                     else:
                         print("✗ Feature analysis failed to select features")
                 except Exception as e:
@@ -219,6 +244,28 @@ def handle_analyze_features(cli: TradingBotCLI, logger: Logger, processor_factor
             else:
                 logger.info("Feature analysis configuration cancelled")
                 print("Feature analysis configuration cancelled")
+
+
+def display_top_features(
+        feature_service: FeatureService,
+        pair: str,
+        timeframe: str,
+        model_type: str = "direction"
+) -> None:
+    """Display top features for a given model type"""
+    importance_dict = feature_service.get_feature_importance(
+        pair, timeframe, model_type, top_n=10
+    )
+
+    if not importance_dict:
+        print(f"No feature importance data available for {pair} {timeframe} {model_type}")
+        return
+
+    print(f"\n═════════════ TOP FEATURES ({model_type.upper()}) ═════════════")
+    for i, (feature, importance) in enumerate(importance_dict.items(), 1):
+        print(f"{i}. {feature}: {importance:.4f}")
+    print("═══════════════════════════════════════════")
+
 
 def display_backtest_results(results):
     """Display backtest results in a standardized format."""
@@ -281,57 +328,6 @@ def process_datasets(processor, storage, logger, pair, timeframe, dataset_types)
         except Exception as e:
             logger.error(f"Error processing {dataset_type} data: {e}")
             print(f"✗ Error processing {dataset_type} data: {str(e)}")
-
-
-def validate_datasets(processor, validator, logger, pair, timeframe, dataset_types):
-    """Validate indicators across multiple datasets"""
-    for dataset_type in dataset_types:
-        try:
-            print(f"Validating {dataset_type} data...")
-
-            # Get the raw data and process it
-            df = processor.get_data_from_db(pair, timeframe, dataset_type)
-
-            # Log the raw data columns
-            logger.info(f"Raw data columns: {list(df.columns)}")
-
-            # Process the data (add indicators)
-            processed_df = processor.process_raw_data(df)
-            logger.info(f"After processing, columns: {list(processed_df.columns)}")
-
-            # Create features
-            feature_df = processor.create_features(processed_df)
-            logger.info(f"After feature engineering, columns: {list(feature_df.columns)}")
-
-            if feature_df.empty:
-                logger.warning(f"No data found for {pair} {timeframe} {dataset_type}")
-                print(f"✗ No data found for {dataset_type}")
-                continue
-
-            # Run validation
-            print(f"Running indicator validation on {len(feature_df)} rows...")
-            results = validator.validate_technical_indicators(feature_df)
-
-            # Display results
-            all_valid = all(results.values())
-
-            if all_valid:
-                print(f"✓ All indicators validated successfully for {dataset_type} data")
-            else:
-                print(f"✗ Validation failed for some indicators in {dataset_type} data:")
-                for indicator, is_valid in results.items():
-                    status = "✓" if is_valid else "✗"
-                    print(f"  {status} {indicator}")
-
-                # Generate visualizations anyway to help diagnose issues
-                print("Generating visualizations to help diagnose issues...")
-                print("✓ Visualizations generated in ValidationReports/Visualizations")
-
-                print("\nPlease check ValidationReports for detailed validation report.")
-
-        except Exception as e:
-            logger.error(f"Error validating {dataset_type} data: {e}")
-            print(f"✗ Error validating {dataset_type} data: {str(e)}")
 
 
 if __name__ == '__main__':
