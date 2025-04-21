@@ -15,6 +15,8 @@ from Processing.ProcessorFactory import ProcessorFactory
 from Processing.FeatureService import FeatureService
 from UI.cli import TradingBotCLI
 from UI.Constants import AppMode
+from Models.ModelFactory import ModelFactory
+from Training.ModelTrainer import ModelTrainer
 
 
 @inject
@@ -24,6 +26,7 @@ def main(
         fetcher_factory: FetcherFactory = Provide[Container.fetcher_factory],
         processor_factory: ProcessorFactory = Provide[Container.processor_factory],
         feature_service: FeatureService = Provide[Container.feature_service],
+        model_factory: ModelFactory = Provide[Container.model_factory],
 ) -> None:
     logger.info('Application started')
     # Log configuration values
@@ -56,6 +59,8 @@ def main(
             handle_process_data(cli, logger, processor_factory)
         elif action == AppMode.ANALYZE_FEATURES.value:
             handle_analyze_features(cli, logger, processor_factory, feature_service)
+        elif action == AppMode.TRAIN_MODEL.value:
+            handle_train_model(cli, logger, processor_factory, model_factory)
         else:
             logger.info(f'Selected action: {action}')
 
@@ -216,7 +221,7 @@ def handle_analyze_features(
 
                 try:
                     # Run single target analysis
-                    selected_features = feature_analyzer.run_complete_analysis(
+                    selected_features, importance_df = feature_analyzer.run_complete_analysis(
                         pair=analysis_config['pair'],
                         timeframe=analysis_config['timeframe'],
                         dataset_type="training",
@@ -246,6 +251,280 @@ def handle_analyze_features(
                 print("Feature analysis configuration cancelled")
 
 
+def handle_train_model(
+        cli: TradingBotCLI,
+        logger: Logger,
+        processor_factory: ProcessorFactory,
+        model_factory: ModelFactory
+) -> None:
+    """Handle model training flow"""
+    while True:
+        train_action = cli.train_model_menu()
+
+        if train_action == "back":
+            logger.info("Returning to main menu")
+            break
+
+        elif train_action == "train_new":
+            logger.info("Training new model")
+            model_config = cli.model_config_menu()
+
+            if model_config:
+                logger.info(f"Selected model config: {model_config}")
+                print(f"Training new model for {model_config['pair']} {model_config['timeframe']} "
+                      f"({model_config['model_type']})...")
+
+                try:
+                    # Create data storage
+                    data_storage = processor_factory.create_data_storage()
+
+                    # Create training pipeline
+                    training_pipeline = model_factory.create_training_pipeline(
+                        data_storage,
+                        pair=model_config['pair'],
+                        timeframe=model_config['timeframe'],
+                        model_type=model_config['model_type']
+                    )
+
+                    if not training_pipeline:
+                        logger.error("Failed to create training pipeline")
+                        print("✗ Failed to create training pipeline")
+                        continue
+
+                    # Get trainer from pipeline
+                    trainer = training_pipeline.get('trainer')
+
+                    # Prepare dataset
+                    print("Preparing training data...")
+                    dataset = trainer.prepare_training_data(
+                        pair=model_config['pair'],
+                        timeframe=model_config['timeframe'],
+                        model_type=model_config['model_type']
+                    )
+
+                    if not dataset:
+                        logger.error("Failed to prepare training data")
+                        print("✗ Failed to prepare training data")
+                        continue
+
+                    # Train model
+                    print(
+                        f"Training model with {model_config['epochs']} epochs, batch size {model_config['batch_size']}...")
+                    history = trainer.train_model(
+                        epochs=model_config['epochs'],
+                        batch_size=model_config['batch_size']
+                    )
+
+                    if history:
+                        print("✓ Model training completed successfully")
+                        print(f"  - Model saved to {trainer.output_dir}")
+
+                        # Evaluate model
+                        print("Evaluating model performance...")
+                        metrics = trainer.evaluate_model()
+
+                        if metrics:
+                            print("Model evaluation results:")
+                            print(f"  - Direction accuracy: {metrics.get('direction_accuracy', 0):.4f}")
+                            print(f"  - Win rate: {metrics.get('win_rate', 0):.4f}")
+                            print(f"  - Profit factor: {metrics.get('profit_factor', 0):.4f}")
+                            print(f"  - Expected return: {metrics.get('expected_return', 0):.4f}")
+                    else:
+                        print("✗ Model training failed")
+
+                except Exception as e:
+                    logger.error(f"Error training model: {e}")
+                    print(f"✗ Error training model: {str(e)}")
+            else:
+                logger.info("Model configuration cancelled")
+                print("Model configuration cancelled")
+
+        elif train_action == "continue_training":
+            logger.info("Continuing training for existing model")
+            model_path = cli.select_model_menu()
+
+            if model_path and model_path != "back":
+                print(f"Loading model from {model_path}...")
+
+                try:
+                    # Load the model
+                    model = model_factory.load_model(model_path)
+
+                    if not model:
+                        logger.error("Failed to load model")
+                        print("✗ Failed to load model")
+                        continue
+
+                    # Get model metadata
+                    model_dir = os.path.dirname(model_path)
+                    metadata_path = os.path.join(model_dir, "model_metadata.json")
+
+                    import json
+                    with open(metadata_path, "r") as f:
+                        metadata = json.load(f)
+
+                    pair = metadata.get("pair")
+                    timeframe = metadata.get("timeframe")
+                    model_type = metadata.get("model_type")
+
+                    print(f"Model loaded: {pair} {timeframe} {model_type}")
+
+                    # Get training parameters
+                    epochs = questionary.text(
+                        'Additional epochs to train (default: 20):',
+                        default="20",
+                        validate=lambda text: text.isdigit() and int(text) > 0
+                    ).ask()
+
+                    batch_size = questionary.text(
+                        'Batch size (default: 32):',
+                        default="32",
+                        validate=lambda text: text.isdigit() and int(text) > 0
+                    ).ask()
+
+                    # Create data storage
+                    data_storage = processor_factory.create_data_storage()
+
+                    # Create data preprocessor
+                    preprocessor = model_factory.create_data_preprocessor(data_storage)
+                    preprocessor.set_pair_timeframe(pair, timeframe)
+
+                    # Create trainer with the loaded model
+                    trainer = model_factory.create_model_trainer(preprocessor, model)
+                    trainer.set_model_type(model_type)
+
+                    # Prepare dataset
+                    print("Preparing training data...")
+                    dataset = trainer.prepare_training_data(
+                        pair=pair,
+                        timeframe=timeframe,
+                        model_type=model_type
+                    )
+
+                    if not dataset:
+                        logger.error("Failed to prepare training data")
+                        print("✗ Failed to prepare training data")
+                        continue
+
+                    # Continue training
+                    print(f"Continuing training with {epochs} additional epochs...")
+                    history = trainer.train_model(
+                        epochs=int(epochs),
+                        batch_size=int(batch_size),
+                        continued_training=True
+                    )
+
+                    if history:
+                        print("✓ Model training completed successfully")
+                        print(f"  - Updated model saved to {trainer.output_dir}")
+
+                        # Evaluate model
+                        print("Evaluating model performance...")
+                        metrics = trainer.evaluate_model()
+
+                        if metrics:
+                            print("Model evaluation results:")
+                            print(f"  - Direction accuracy: {metrics.get('direction_accuracy', 0):.4f}")
+                            print(f"  - Win rate: {metrics.get('win_rate', 0):.4f}")
+                            print(f"  - Profit factor: {metrics.get('profit_factor', 0):.4f}")
+                            print(f"  - Expected return: {metrics.get('expected_return', 0):.4f}")
+                    else:
+                        print("✗ Model training failed")
+
+                except Exception as e:
+                    logger.error(f"Error continuing model training: {e}")
+                    print(f"✗ Error continuing model training: {str(e)}")
+            else:
+                logger.info("Model selection cancelled")
+                print("Model selection cancelled")
+
+        elif train_action == "test_model":
+            logger.info("Testing model performance")
+            model_path = cli.select_model_menu()
+
+            if model_path and model_path != "back":
+                print(f"Loading model from {model_path}...")
+
+                try:
+                    # Load the model
+                    model = model_factory.load_model(model_path)
+
+                    if not model:
+                        logger.error("Failed to load model")
+                        print("✗ Failed to load model")
+                        continue
+
+                    # Get model metadata
+                    model_dir = os.path.dirname(model_path)
+                    metadata_path = os.path.join(model_dir, "model_metadata.json")
+
+                    import json
+                    with open(metadata_path, "r") as f:
+                        metadata = json.load(f)
+
+                    pair = metadata.get("pair")
+                    timeframe = metadata.get("timeframe")
+                    model_type = metadata.get("model_type")
+
+                    print(f"Model loaded: {pair} {timeframe} {model_type}")
+
+                    # Create data storage
+                    data_storage = processor_factory.create_data_storage()
+
+                    # Create data preprocessor
+                    preprocessor = model_factory.create_data_preprocessor(data_storage)
+                    preprocessor.set_pair_timeframe(pair, timeframe)
+
+                    # Create trainer with the loaded model
+                    trainer = model_factory.create_model_trainer(preprocessor, model)
+                    trainer.set_model_type(model_type)
+
+                    # Test dataset options
+                    dataset_types = ["training", "validation", "testing"]
+                    dataset_type = questionary.select(
+                        'Select dataset for model evaluation:',
+                        choices=dataset_types
+                    ).ask()
+
+                    if not dataset_type:
+                        continue
+
+                    # Prepare dataset
+                    print(f"Loading {dataset_type} data for model evaluation...")
+                    dataset = trainer.prepare_training_data(
+                        pair=pair,
+                        timeframe=timeframe,
+                        dataset_type=dataset_type,
+                        model_type=model_type
+                    )
+
+                    if not dataset:
+                        logger.error(f"Failed to prepare {dataset_type} data")
+                        print(f"✗ Failed to prepare {dataset_type} data")
+                        continue
+
+                    # Evaluate model
+                    print("Evaluating model performance...")
+                    metrics = trainer.evaluate_model()
+
+                    if metrics:
+                        print(f"Model evaluation results on {dataset_type} data:")
+                        print(f"  - Direction accuracy: {metrics.get('direction_accuracy', 0):.4f}")
+                        print(f"  - Win rate: {metrics.get('win_rate', 0):.4f}")
+                        print(f"  - Profit factor: {metrics.get('profit_factor', 0):.4f}")
+                        print(f"  - Expected return: {metrics.get('expected_return', 0):.4f}")
+                        print(f"  - Evaluation plots saved to {trainer.output_dir}")
+                    else:
+                        print("✗ Model evaluation failed")
+
+                except Exception as e:
+                    logger.error(f"Error evaluating model: {e}")
+                    print(f"✗ Error evaluating model: {str(e)}")
+            else:
+                logger.info("Model selection cancelled")
+                print("Model selection cancelled")
+
+
 def display_top_features(
         feature_service: FeatureService,
         pair: str,
@@ -265,33 +544,6 @@ def display_top_features(
     for i, (feature, importance) in enumerate(importance_dict.items(), 1):
         print(f"{i}. {feature}: {importance:.4f}")
     print("═══════════════════════════════════════════")
-
-
-def display_backtest_results(results):
-    """Display backtest results in a standardized format."""
-    if not results:
-        print("No results to display")
-        return
-
-    metrics = results.get('metrics', {})
-
-    print(f"\n═════════════ BACKTEST RESULTS ═════════════")
-    print(f"• Net profit: ${metrics.get('net_profit', 0):.2f}")
-    print(f"• Return: {metrics.get('return_pct', 0):.2f}%")
-    print(f"• Win rate: {metrics.get('win_rate', 0) * 100:.2f}%")
-    print(f"• Profit factor: {metrics.get('profit_factor', 0):.2f}")
-    print(f"• Max drawdown: {metrics.get('max_drawdown_pct', 0):.2f}%")
-    print(f"• Sharpe ratio: {metrics.get('sharpe_ratio', 0):.2f}")
-    print(f"• Total trades: {metrics.get('total_trades', 0)}")
-
-    if 'trades' in results:
-        winning_trades = sum(1 for t in results['trades'] if t.get('profit_loss', 0) > 0)
-        losing_trades = sum(1 for t in results['trades'] if t.get('profit_loss', 0) <= 0)
-        print(f"• Winning trades: {winning_trades}")
-        print(f"• Losing trades: {losing_trades}")
-
-    print(f"═══════════════════════════════════════════")
-    print(f"Detailed report available in BacktestResults directory")
 
 
 def process_datasets(processor, storage, logger, pair, timeframe, dataset_types):

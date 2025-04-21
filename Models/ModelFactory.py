@@ -62,8 +62,11 @@ class ModelFactory:
             # Create LSTMModel with appropriate dimensions
             model = LSTMModel(self.config, input_shape, n_features)
 
-            # Load weights (AttentionLayer is already registered)
+            # Load weights
             model.load_model(model_path)
+
+            # Ensure the model is compiled
+            model.compile_model()
 
             self.logger.info(f"Model loaded successfully with input shape {input_shape}")
             return model

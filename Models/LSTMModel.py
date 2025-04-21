@@ -279,6 +279,9 @@ class LSTMModel:
             custom_objects={'AttentionLayer': AttentionLayer}
         )
 
+        # Always compile the model after loading to ensure it's ready for evaluation
+        self.compile_model()
+
     def get_model_summary(self) -> str:
         """Get model summary as a string."""
 
