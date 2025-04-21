@@ -148,17 +148,100 @@ class TechnicalIndicators:
 
     @staticmethod
     def calculate_all_indicators(data: pd.DataFrame) -> pd.DataFrame:
-        """Calculate all technical indicators."""
+        """Calculate all technical indicators with default parameters."""
         result = data.copy()
 
-        # Calculate all indicators
-        result = TechnicalIndicators.calculate_sma(result)
-        result = TechnicalIndicators.calculate_ema(result)
-        result = TechnicalIndicators.calculate_macd(result)
-        result = TechnicalIndicators.calculate_rsi(result)
-        result = TechnicalIndicators.calculate_bollinger_bands(result)
-        result = TechnicalIndicators.calculate_atr(result)
-        result = TechnicalIndicators.calculate_stochastic(result)
-        result = TechnicalIndicators.calculate_pivot_points(result)
+        # Calculate Moving Averages
+        result = TechnicalIndicators.calculate_sma(result, periods=[5, 8, 13, 21, 50, 200])
+        result = TechnicalIndicators.calculate_ema(result, periods=[5, 8, 13, 21, 50, 200])
+        result = TechnicalIndicators.calculate_macd(result, fast_period=12, slow_period=26, signal_period=9)
+
+        # Calculate Volatility indicators
+        result = TechnicalIndicators.calculate_bollinger_bands(result, period=20, num_std=2.0)
+        result = TechnicalIndicators.calculate_atr(result, period=14)
+
+        # Calculate Momentum indicators
+        result = TechnicalIndicators.calculate_rsi(result, period=14)
+        result = TechnicalIndicators.calculate_stochastic(result, k_period=14, d_period=3)
+
+        # Calculate Pivot Points
+        result = TechnicalIndicators.calculate_pivot_points(result, method="standard")
+
+        # Additional indicators that might be useful
+
+        # Calculate Rate of Change (RoC)
+        periods = [5, 10, 20]
+        for period in periods:
+            result[f'roc_{period}'] = (result['close'] / result['close'].shift(period) - 1) * 100
+
+        # Calculate Average Directional Index (ADX)
+        period = 14
+        plus_dm = result['high'].diff()
+        minus_dm = result['low'].diff(-1).abs()
+        plus_dm[plus_dm < 0] = 0
+        minus_dm[minus_dm < 0] = 0
+        tr1 = (result['high'] - result['low']).abs()
+        tr2 = (result['high'] - result['close'].shift()).abs()
+        tr3 = (result['low'] - result['close'].shift()).abs()
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        atr = tr.rolling(window=period).mean()
+        plus_di = 100 * (plus_dm.rolling(window=period).mean() / atr)
+        minus_di = 100 * (minus_dm.rolling(window=period).mean() / atr)
+        dx = 100 * ((plus_di - minus_di).abs() / (plus_di + minus_di).abs())
+        result['adx'] = dx.rolling(window=period).mean()
+        result['plus_di'] = plus_di
+        result['minus_di'] = minus_di
+
+        # Calculate Money Flow Index (MFI)
+        period = 14
+        typical_price = (result['high'] + result['low'] + result['close']) / 3
+        money_flow = typical_price * result['tick_volume']
+        positive_flow = pd.Series(0, index=result.index)
+        negative_flow = pd.Series(0, index=result.index)
+        positive_flow[typical_price > typical_price.shift(1)] = money_flow[typical_price > typical_price.shift(1)]
+        negative_flow[typical_price < typical_price.shift(1)] = money_flow[typical_price < typical_price.shift(1)]
+        positive_mf = positive_flow.rolling(window=period).sum()
+        negative_mf = negative_flow.rolling(window=period).sum()
+        money_ratio = positive_mf / negative_mf
+        result['mfi'] = 100 - (100 / (1 + money_ratio))
+
+        # Calculate Commodity Channel Index (CCI)
+        period = 20
+        tp = (result['high'] + result['low'] + result['close']) / 3
+        tp_ma = tp.rolling(window=period).mean()
+        tp_dev = (tp - tp_ma).abs().rolling(window=period).mean()
+        result['cci'] = (tp - tp_ma) / (0.015 * tp_dev)
+
+        # Calculate Williams %R
+        periods = [14, 28]
+        for period in periods:
+            highest_high = result['high'].rolling(window=period).max()
+            lowest_low = result['low'].rolling(window=period).min()
+            result[f'williams_r_{period}'] = -100 * (highest_high - result['close']) / (highest_high - lowest_low)
+
+        # Calculate Ichimoku Cloud elements
+        tenkan_period = 9
+        kijun_period = 26
+        senkou_b_period = 52
+
+        # Tenkan-sen (Conversion Line)
+        result['ichimoku_tenkan_sen'] = (result['high'].rolling(window=tenkan_period).max() +
+                                         result['low'].rolling(window=tenkan_period).min()) / 2
+
+        # Kijun-sen (Base Line)
+        result['ichimoku_kijun_sen'] = (result['high'].rolling(window=kijun_period).max() +
+                                        result['low'].rolling(window=kijun_period).min()) / 2
+
+        # Senkou Span A (Leading Span A)
+        result['ichimoku_senkou_span_a'] = ((result['ichimoku_tenkan_sen'] + result['ichimoku_kijun_sen']) / 2).shift(
+            kijun_period)
+
+        # Senkou Span B (Leading Span B)
+        result['ichimoku_senkou_span_b'] = ((result['high'].rolling(window=senkou_b_period).max() +
+                                             result['low'].rolling(window=senkou_b_period).min()) / 2).shift(
+            kijun_period)
+
+        # Chikou Span (Lagging Span)
+        result['ichimoku_chikou_span'] = result['close'].shift(-kijun_period)
 
         return result

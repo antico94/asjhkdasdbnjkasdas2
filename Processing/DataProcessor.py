@@ -12,10 +12,51 @@ class DataProcessor:
     def __init__(self, config: Config, logger: Logger):
         self.config = config
         self.logger = logger
+
+        # Get GoldTradingSettings from config
         self.gold_settings = config.get('GoldTradingSettings', {})
+
+        # Log if GoldTradingSettings is missing or empty
+        if not self.gold_settings:
+            self.logger.warning("GoldTradingSettings is missing or empty in config. Using default values.")
+            # Set default values
+            self.gold_settings = {
+                'Indicators': {
+                    'MovingAverages': {
+                        'SMA': {'Periods': [5, 8, 13, 21, 50, 200]},
+                        'EMA': {'Periods': [5, 8, 13, 21, 50, 200]},
+                        'MACD': {'FastPeriod': 12, 'SlowPeriod': 26, 'SignalPeriod': 9}
+                    },
+                    'Volatility': {
+                        'BollingerBands': {'Period': 20, 'NumStd': 2.0},
+                        'ATR': {'Period': 14}
+                    },
+                    'Momentum': {
+                        'RSI': {'Period': 14, 'OverBought': 70, 'OverSold': 30},
+                        'Stochastic': {'KPeriod': 14, 'DPeriod': 3, 'SlowingPeriod': 3}
+                    },
+                    'PivotPoints': {'Method': 'standard'}
+                },
+                'FeatureEngineering': {
+                    'WindowSizes': [1, 3, 5],
+                    'PriceFeatures': ['close', 'high', 'low', 'open']
+                },
+                'MachineLearning': {
+                    'Targets': {
+                        'PricePrediction': {'Horizons': [1, 3, 5]},
+                        'DirectionPrediction': {'Threshold': 0.001}
+                    }
+                }
+            }
+        else:
+            self.logger.info("GoldTradingSettings found in config.")
+
         self.db_config = config.get('Database', {})
         self.indicators = TechnicalIndicators()
         self.engine = self._create_engine()
+
+        # Log indicator settings to ensure they're being loaded correctly
+        self.logger.info(f"Loaded indicator settings: {self.gold_settings.get('Indicators', {})}")
 
     def _create_engine(self):
         """Create SQLAlchemy engine for database connections."""
@@ -92,20 +133,30 @@ class DataProcessor:
             momentum_settings = self.gold_settings.get('Indicators', {}).get('Momentum', {})
             pivot_settings = self.gold_settings.get('Indicators', {}).get('PivotPoints', {})
 
+            # Log the settings being used
+            self.logger.info(f"MA settings: {ma_settings}")
+            self.logger.info(f"Volatility settings: {volatility_settings}")
+            self.logger.info(f"Momentum settings: {momentum_settings}")
+            self.logger.info(f"Pivot settings: {pivot_settings}")
+
             # Calculate Moving Averages
             if 'SMA' in ma_settings:
                 periods = ma_settings['SMA'].get('Periods', [5, 8, 13, 21, 50, 200])
-                result = TechnicalIndicators.calculate_sma(result, periods=periods)
+                self.logger.info(f"Calculating SMA with periods: {periods}")
+                result = self.indicators.calculate_sma(result, periods=periods)
 
             if 'EMA' in ma_settings:
                 periods = ma_settings['EMA'].get('Periods', [5, 8, 13, 21, 50, 200])
-                result = TechnicalIndicators.calculate_ema(result, periods=periods)
+                self.logger.info(f"Calculating EMA with periods: {periods}")
+                result = self.indicators.calculate_ema(result, periods=periods)
 
             if 'MACD' in ma_settings:
                 fast_period = ma_settings['MACD'].get('FastPeriod', 12)
                 slow_period = ma_settings['MACD'].get('SlowPeriod', 26)
                 signal_period = ma_settings['MACD'].get('SignalPeriod', 9)
-                result = TechnicalIndicators.calculate_macd(
+                self.logger.info(
+                    f"Calculating MACD with fast={fast_period}, slow={slow_period}, signal={signal_period}")
+                result = self.indicators.calculate_macd(
                     result, fast_period=fast_period, slow_period=slow_period, signal_period=signal_period
                 )
 
@@ -113,30 +164,44 @@ class DataProcessor:
             if 'BollingerBands' in volatility_settings:
                 period = volatility_settings['BollingerBands'].get('Period', 20)
                 num_std = volatility_settings['BollingerBands'].get('NumStd', 2.0)
-                result = TechnicalIndicators.calculate_bollinger_bands(
+                self.logger.info(f"Calculating Bollinger Bands with period={period}, std={num_std}")
+                result = self.indicators.calculate_bollinger_bands(
                     result, period=period, num_std=num_std
                 )
 
             if 'ATR' in volatility_settings:
                 period = volatility_settings['ATR'].get('Period', 14)
-                result = TechnicalIndicators.calculate_atr(result, period=period)
+                self.logger.info(f"Calculating ATR with period={period}")
+                result = self.indicators.calculate_atr(result, period=period)
 
             # Calculate Momentum indicators
             if 'RSI' in momentum_settings:
                 period = momentum_settings['RSI'].get('Period', 14)
-                result = TechnicalIndicators.calculate_rsi(result, period=period)
+                self.logger.info(f"Calculating RSI with period={period}")
+                result = self.indicators.calculate_rsi(result, period=period)
 
             if 'Stochastic' in momentum_settings:
                 k_period = momentum_settings['Stochastic'].get('KPeriod', 14)
                 d_period = momentum_settings['Stochastic'].get('DPeriod', 3)
-                result = TechnicalIndicators.calculate_stochastic(
+                self.logger.info(f"Calculating Stochastic with k_period={k_period}, d_period={d_period}")
+                result = self.indicators.calculate_stochastic(
                     result, k_period=k_period, d_period=d_period
                 )
 
             # Calculate Pivot Points if configured
             if pivot_settings:
                 method = pivot_settings.get('Method', 'standard')
-                result = TechnicalIndicators.calculate_pivot_points(result, method=method)
+                self.logger.info(f"Calculating Pivot Points with method={method}")
+                result = self.indicators.calculate_pivot_points(result, method=method)
+
+            # Log columns after adding indicators
+            self.logger.info(f"Columns after adding indicators: {list(result.columns)}")
+
+            # Fallback to calculating all indicators if none were added from config
+            if len(result.columns) <= len(df.columns) + 2:  # Allow for a couple of extra columns
+                self.logger.warning("Few or no indicators were added from config, calculating all")
+                result = self.indicators.calculate_all_indicators(result)
+                self.logger.info(f"Columns after fallback: {list(result.columns)}")
 
             return result
 
