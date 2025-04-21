@@ -1,0 +1,13 @@
+.venv
+.idea
+.idea/*
+# Python virtual env
+.venv/
+
+# JetBrains IDE settings
+.idea/
+*.iml
+TrainedModels
+*.h5
+BacktestResults
+ValidationReport

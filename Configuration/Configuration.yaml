@@ -1,0 +1,88 @@
+MetaTrader5:
+  Login: 145688
+  Password: "X9vyB7%90i"
+  Server: FusionMarkets-Demo
+  Timeout: 60000
+FetchingSettings:
+  DefaultPair: "XAUUSD"
+  SplittingRatio:
+    Training: 70
+    Validation: 15
+    Testing: 15
+  DefaultTimeperiod: 2001
+  DefaultTimeframe: "H1"
+Database:
+  Host: "localhost"
+  Port: 1433
+  User: "app_user"
+  Password: "password01!"
+  Database: "TestDB"
+GoldTradingSettings:
+  RiskManagement:
+    max_risk_per_trade: 0.05  # Maximum risk per trade (5% of account balance)
+    base_risk_per_trade: 0.01  # Base risk per trade (1% of account balance)
+    max_position_size_factor: 0.1  # Maximum position size factor
+    stop_loss_atr_multiplier: 1.5  # Stop loss multiplier based on ATR
+    stop_loss_volatility_factor: 0.5  # Stop loss adjustment based on volatility
+    take_profit_risk_ratio: 2.0  # Take profit to risk ratio
+    partial_take_profit_level: 0.5  # Level to take partial profits
+    partial_take_profit_pct: 0.5  # Percentage to close at partial profit
+    breakeven_level: 1.0  # Level to move stop loss to breakeven
+    max_open_trades: 5  # Maximum number of open trades
+  Indicators:
+    MovingAverages:
+      SMA:
+        Periods: [5, 8, 13, 21, 50, 200]
+      EMA:
+        Periods: [5, 8, 13, 21, 50, 200]
+      MACD:
+        FastPeriod: 12
+        SlowPeriod: 26
+        SignalPeriod: 9
+    Volatility:
+      BollingerBands:
+        Period: 20
+        NumStd: 2.0
+      ATR:
+        Period: 14
+    Momentum:
+      RSI:
+        Period: 14
+        OverBought: 70
+        OverSold: 30
+      Stochastic:
+        KPeriod: 14
+        DPeriod: 3
+        SlowingPeriod: 3
+    PivotPoints:
+      Method: "standard"  # Options: standard, fibonacci, woodie, camarilla
+  FeatureEngineering:
+    IncludeExternalFactors: true
+    WindowSizes: [1, 3, 5]  # For lagged features
+    PriceFeatures:
+      - close
+      - high
+      - low
+      - open
+  MachineLearning:
+    Models:
+      - RandomForest
+      - GradientBoosting
+      - LSTM
+    Hyperparameters:
+      RandomForest:
+        n_estimators: 100
+        max_depth: 10
+      GradientBoosting:
+        n_estimators: 100
+        learning_rate: 0.1
+      LSTM:
+        units: 50
+        dropout: 0.2
+        epochs: 50
+        batch_size: 32
+    Targets:
+      PricePrediction:
+        Horizons: [1, 3, 5]
+      DirectionPrediction:
+        Threshold: 0.001
