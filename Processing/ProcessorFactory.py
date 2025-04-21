@@ -1,3 +1,4 @@
+from Processing.FeaturesAnalisys import FeatureAnalyzer
 from Utilities.ConfigurationUtils import Config
 from Utilities.LoggingUtils import Logger
 from Processing.DataProcessor import DataProcessor
@@ -18,3 +19,7 @@ class ProcessorFactory:
 
     def create_indicator_validator(self) -> IndicatorValidator:
         return IndicatorValidator(self.config, self.logger)
+
+    def create_feature_analyzer(self) -> FeatureAnalyzer:
+        storage = self.create_data_storage()
+        return FeatureAnalyzer(self.config, self.logger, storage)

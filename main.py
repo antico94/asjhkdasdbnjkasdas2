@@ -55,6 +55,8 @@ def main(
             handle_process_data(cli, logger, processor_factory)
         elif action == AppMode.VALIDATE_DATA.value:
             handle_validate_data(logger, processor_factory)
+        elif action == AppMode.ANALYZE_FEATURES.value:
+            handle_analyze_features(cli, logger, processor_factory)
         else:
             logger.info(f'Selected action: {action}')
 
@@ -163,6 +165,73 @@ def handle_validate_data(logger: Logger, processor_factory: ProcessorFactory) ->
 
     # Validate training, validation, and testing datasets for XAUUSD
     validate_datasets(processor, validator, logger, "XAUUSD", "H1", ["training", "validation", "testing"])
+
+
+def handle_analyze_features(cli: TradingBotCLI, logger: Logger, processor_factory: ProcessorFactory) -> None:
+    """Handle feature analysis flow"""
+    while True:
+        analyze_action = cli.analyze_features_menu()
+
+        if analyze_action == "back":
+            logger.info("Returning to main menu")
+            break
+
+        elif analyze_action == "run_analysis":
+            logger.info("Running feature analysis")
+            print("Starting feature analysis...")
+
+            feature_analyzer = processor_factory.create_feature_analyzer()
+
+            # Run analysis for default settings
+            try:
+                selected_features = feature_analyzer.run_complete_analysis(
+                    pair="XAUUSD",
+                    timeframe="H1",
+                    dataset_type="training",
+                    target_col="future_price_1"
+                )
+
+                if selected_features:
+                    print(f"✓ Feature analysis completed successfully")
+                    print(f"  - Selected {len(selected_features)} optimal features")
+                    print(f"  - Results saved to FeatureAnalysis directory")
+                else:
+                    print("✗ Feature analysis failed to select features")
+            except Exception as e:
+                logger.error(f"Error running feature analysis: {e}")
+                print(f"✗ Error running feature analysis: {str(e)}")
+
+        elif analyze_action == "custom_analysis":
+            logger.info("Running custom feature analysis")
+            analysis_config = cli.feature_analysis_config_menu()
+
+            if analysis_config:
+                logger.info(f"Selected analysis config: {analysis_config}")
+                print(f"Running feature analysis for {analysis_config['pair']} {analysis_config['timeframe']} "
+                      f"with target {analysis_config['target']}...")
+
+                feature_analyzer = processor_factory.create_feature_analyzer()
+
+                try:
+                    selected_features = feature_analyzer.run_complete_analysis(
+                        pair=analysis_config['pair'],
+                        timeframe=analysis_config['timeframe'],
+                        dataset_type="training",
+                        target_col=analysis_config['target']
+                    )
+
+                    if selected_features:
+                        print(f"✓ Feature analysis completed successfully")
+                        print(f"  - Selected {len(selected_features)} optimal features")
+                        print(f"  - Results saved to FeatureAnalysis directory")
+                    else:
+                        print("✗ Feature analysis failed to select features")
+                except Exception as e:
+                    logger.error(f"Error running feature analysis: {e}")
+                    print(f"✗ Error running feature analysis: {str(e)}")
+            else:
+                logger.info("Feature analysis configuration cancelled")
+                print("Feature analysis configuration cancelled")
 
 def display_backtest_results(results):
     """Display backtest results in a standardized format."""
