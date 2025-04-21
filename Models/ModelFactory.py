@@ -37,9 +37,10 @@ class ModelFactory:
         """Create a model trainer instance."""
         return ModelTrainer(self.config, self.logger, data_preprocessor, model)
 
-    def create_lstm_model(self, input_shape: Tuple[int, int], n_features: int) -> LSTMModel:
-        """Create an LSTM model instance."""
-        return LSTMModel(self.config, input_shape, n_features)
+    def create_lstm_model(self, input_shape: Tuple[int, int], n_features: int,
+                          model_type: str = "combined") -> LSTMModel:
+        """Create an LSTM model instance with specific type."""
+        return LSTMModel(self.config, input_shape, n_features, model_type)
 
     def load_model(self, model_path: str) -> LSTMModel:
         """Load a trained model from file."""
@@ -50,6 +51,20 @@ class ModelFactory:
                 self.logger.error(f"Model file not found: {model_path}")
                 raise FileNotFoundError(f"Model file not found: {model_path}")
 
+            # Get model metadata to determine model type
+            model_dir = os.path.dirname(model_path)
+            metadata_path = os.path.join(model_dir, "model_metadata.json")
+
+            model_type = "combined"  # Default
+            if os.path.exists(metadata_path):
+                try:
+                    import json
+                    with open(metadata_path, "r") as f:
+                        metadata = json.load(f)
+                    model_type = metadata.get("model_type", "combined")
+                except Exception as e:
+                    self.logger.warning(f"Could not read model metadata: {e}")
+
             # Load Keras model to get input shape, registering the custom layer
             keras_model = tf.keras.models.load_model(
                 model_path,
@@ -59,8 +74,8 @@ class ModelFactory:
             input_shape = keras_model.input_shape[1:]  # Remove batch dimension
             n_features = input_shape[1]
 
-            # Create LSTMModel with appropriate dimensions
-            model = LSTMModel(self.config, input_shape, n_features)
+            # Create LSTMModel with appropriate dimensions and type
+            model = LSTMModel(self.config, input_shape, n_features, model_type)
 
             # Load weights
             model.load_model(model_path)
@@ -68,20 +83,16 @@ class ModelFactory:
             # Ensure the model is compiled
             model.compile_model()
 
-            self.logger.info(f"Model loaded successfully with input shape {input_shape}")
+            self.logger.info(f"Model loaded successfully with input shape {input_shape}, type: {model_type}")
             return model
 
         except Exception as e:
             self.logger.error(f"Error loading model: {e}")
             raise
 
-    def create_training_pipeline(self, data_storage, pair: str, timeframe: str, model_type: str = "direction") -> Dict[
-        str, Any]:
-        """Create a complete training pipeline for a specific currency pair and timeframe.
-
-        Returns:
-            Dictionary containing preprocessor, trainer and other components
-        """
+    def create_training_pipeline(self, data_storage, pair: str, timeframe: str,
+                                 model_type: str = "direction") -> Dict[str, Any]:
+        """Create a complete training pipeline for a specific currency pair and timeframe."""
         try:
             # Create preprocessor
             preprocessor = self.create_data_preprocessor(data_storage)

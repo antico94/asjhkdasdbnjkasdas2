@@ -49,12 +49,13 @@ class AttentionLayer(tf.keras.layers.Layer):
 
 
 class LSTMModel:
-    def __init__(self, config, input_shape: Tuple[int, int], n_features: int):
+    def __init__(self, config, input_shape: Tuple[int, int], n_features: int, model_type: str = "combined"):
         self.config = config
         self.sequence_length = input_shape[0]
         self.n_features = n_features
         self.model = None
         self.history = None
+        self.model_type = model_type  # "direction", "magnitude", "volatility", or "combined"
 
         # Get model configuration from config
         ml_config = self.config.get('GoldTradingSettings', {}).get('MachineLearning', {})
@@ -68,7 +69,7 @@ class LSTMModel:
         self.epochs = lstm_config.get('epochs', 50)
 
     def build_model(self) -> None:
-        """Build the LSTM model architecture."""
+        """Build the LSTM model architecture based on model_type."""
         # Input layer
         inputs = Input(shape=(self.sequence_length, self.n_features))
 
@@ -85,48 +86,47 @@ class LSTMModel:
         # Common dense layers
         x = Dense(32, activation='relu')(x)
 
-        # Multiple outputs
+        # Output layer(s) based on model type
+        outputs = []
+        if self.model_type == "direction" or self.model_type == "combined":
+            direction_output = Dense(1, activation='sigmoid', name='direction')(x)
+            outputs.append(direction_output)
 
-        # 1. Direction prediction (binary classification)
-        direction_output = Dense(1, activation='sigmoid', name='direction')(x)
+        if self.model_type == "magnitude" or self.model_type == "combined":
+            magnitude_output = Dense(1, activation='linear', name='magnitude')(x)
+            outputs.append(magnitude_output)
 
-        # 2. Magnitude prediction (regression)
-        magnitude_output = Dense(1, activation='linear', name='magnitude')(x)
+        if self.model_type == "volatility" or self.model_type == "combined":
+            volatility_output = Dense(1, activation='relu', name='volatility')(x)
+            outputs.append(volatility_output)
 
-        # 3. Volatility prediction (regression, always positive)
-        volatility_output = Dense(1, activation='relu', name='volatility')(x)
-
-        # Create model with multiple outputs
-        self.model = Model(
-            inputs=inputs,
-            outputs=[direction_output, magnitude_output, volatility_output]
-        )
+        # Create model with appropriate outputs
+        self.model = Model(inputs=inputs, outputs=outputs)
 
         # Compile the model
         self.compile_model()
 
     def compile_model(self) -> None:
         """Compile the model with appropriate loss functions and metrics."""
-        # Define losses for each output
-        losses = {
-            'direction': 'binary_crossentropy',
-            'magnitude': 'mse',
-            'volatility': 'mse'
-        }
+        # Define losses, metrics and weights based on model type
+        losses = {}
+        metrics = {}
+        loss_weights = {}
 
-        # Define metrics for each output
-        metrics = {
-            'direction': ['accuracy'],
-            'magnitude': ['mae'],
-            'volatility': ['mae']
-        }
+        if self.model_type == "direction" or self.model_type == "combined":
+            losses['direction'] = 'binary_crossentropy'
+            metrics['direction'] = ['accuracy']
+            loss_weights['direction'] = 1.0
 
-        # Define loss weights to balance the objectives
-        loss_weights = {
-            'direction': 1.0,
-            'magnitude': 0.5,
-            'volatility': 0.3
-        }
+        if self.model_type == "magnitude" or self.model_type == "combined":
+            losses['magnitude'] = 'mse'
+            metrics['magnitude'] = ['mae']
+            loss_weights['magnitude'] = 0.5 if self.model_type == "combined" else 1.0
+
+        if self.model_type == "volatility" or self.model_type == "combined":
+            losses['volatility'] = 'mse'
+            metrics['volatility'] = ['mae']
+            loss_weights['volatility'] = 0.3 if self.model_type == "combined" else 1.0
 
         # Compile model with Adam optimizer and learning rate
         self.model.compile(
@@ -138,17 +138,7 @@ class LSTMModel:
 
     def fit(self, dataset: Dict[str, Any], epochs: int = None, batch_size: int = None,
             callbacks: List = None) -> Dict[str, Any]:
-        """Train the model.
-
-        Args:
-            dataset: Dictionary containing X_train, y_train, X_val, y_val
-            epochs: Number of epochs to train
-            batch_size: Batch size for training
-            callbacks: List of Keras callbacks
-
-        Returns:
-            Training history
-        """
+        """Train the model."""
         if self.model is None:
             self.build_model()
 
@@ -156,29 +146,35 @@ class LSTMModel:
         epochs = epochs or self.epochs
         batch_size = batch_size or self.batch_size
 
-        # Prepare target data format for model
-        y_train = {
-            'direction': dataset['y_train']['direction'],
-            'magnitude': dataset['y_train']['magnitude'].reshape(-1, 1),
-            'volatility': dataset['y_train']['volatility'].reshape(-1, 1) if 'volatility' in dataset['y_train'] else
-            np.zeros((len(dataset['y_train']['direction']), 1))
-        }
+        # Prepare target data format for model based on model type
+        y_train = {}
+        y_val = {}
 
-        y_val = {
-            'direction': dataset['y_val']['direction'],
-            'magnitude': dataset['y_val']['magnitude'].reshape(-1, 1),
-            'volatility': dataset['y_val']['volatility'].reshape(-1, 1) if 'volatility' in dataset['y_val'] else
-            np.zeros((len(dataset['y_val']['direction']), 1))
-        }
+        if self.model_type == "direction" or self.model_type == "combined":
+            y_train['direction'] = dataset['y_train']['direction']
+            y_val['direction'] = dataset['y_val']['direction']
+
+        if self.model_type == "magnitude" or self.model_type == "combined":
+            y_train['magnitude'] = dataset['y_train']['magnitude'].reshape(-1, 1)
+            y_val['magnitude'] = dataset['y_val']['magnitude'].reshape(-1, 1)
+
+        if self.model_type == "volatility" or self.model_type == "combined":
+            if 'volatility' in dataset['y_train']:
+                y_train['volatility'] = dataset['y_train']['volatility'].reshape(-1, 1)
+                y_val['volatility'] = dataset['y_val']['volatility'].reshape(-1, 1)
+            else:
+                # Use zeros if volatility not available
+                y_train['volatility'] = np.zeros((len(dataset['y_train']['direction']), 1))
+                y_val['volatility'] = np.zeros((len(dataset['y_val']['direction']), 1))
 
         # Define default callbacks if none provided
         if callbacks is None:
             callbacks = [
                 EarlyStopping(
-                    monitor='val_direction_accuracy',
+                    monitor=f"val_{'direction_accuracy' if 'direction' in y_train else 'loss'}",
                     patience=10,
                     restore_best_weights=True,
-                    mode='max'
+                    mode='max' if 'direction' in y_train else 'min'
                 ),
                 ReduceLROnPlateau(
                     monitor='val_loss',
@@ -202,69 +198,36 @@ class LSTMModel:
         return self.history.history
 
     def predict(self, X_data: np.ndarray) -> Dict[str, np.ndarray]:
-        """Make predictions.
-
-        Args:
-            X_data: Input feature sequences
-
-        Returns:
-            Dictionary with predictions for direction, magnitude and volatility
-        """
+        """Make predictions."""
         if self.model is None:
             raise ValueError("Model not built yet. Call build_model() or load_model() first.")
 
         # Make predictions
         predictions = self.model.predict(X_data)
 
-        # Return results as dictionary
-        return {
-            'direction': predictions[0].flatten(),
-            'magnitude': predictions[1].flatten(),
-            'volatility': predictions[2].flatten()
-        }
+        # Return results as dictionary based on model type
+        result = {}
 
-    def evaluate(self, X_test: np.ndarray, y_test: Dict[str, np.ndarray]) -> Dict[str, float]:
-        """Evaluate model performance.
+        # Handle single vs multiple outputs
+        if self.model_type == "combined":
+            # Combined model with multiple outputs
+            result['direction'] = predictions[0].flatten() if self.model_type in ["direction", "combined"] else None
+            result['magnitude'] = predictions[1].flatten() if self.model_type in ["magnitude", "combined"] else None
+            result['volatility'] = predictions[2].flatten() if self.model_type in ["volatility", "combined"] else None
+        elif isinstance(predictions, list) and len(predictions) > 1:
+            # Multiple outputs but not combined model type
+            if self.model_type == "direction":
+                result['direction'] = predictions[0].flatten()
+            elif self.model_type == "magnitude":
+                result['magnitude'] = predictions[0].flatten()
+            elif self.model_type == "volatility":
+                result['volatility'] = predictions[0].flatten()
+        else:
+            # Single output
+            result[self.model_type] = predictions.flatten() if not isinstance(predictions, list) else predictions[
+                0].flatten()
 
-        Args:
-            X_test: Test feature sequences
-            y_test: Dictionary of test targets
-
-        Returns:
-            Dictionary with evaluation metrics
-        """
-        if self.model is None:
-            raise ValueError("Model not built yet. Call build_model() or load_model() first.")
-
-        # Format test data
-        y_test_formatted = {
-            'direction': y_test['direction'],
-            'magnitude': y_test['magnitude'].reshape(-1, 1),
-            'volatility': y_test['volatility'].reshape(-1, 1) if 'volatility' in y_test else
-            np.zeros((len(y_test['direction']), 1))
-        }
-
-        # Evaluate the model
-        results = self.model.evaluate(X_test, y_test_formatted, verbose=0)
-
-        # Create metrics dictionary
-        metrics = {}
-        for i, metric_name in enumerate(self.model.metrics_names):
-            metrics[metric_name] = results[i]
-
-        return metrics
-
-    def save_model(self, path: str) -> None:
-        """Save the model to file."""
-
-        if self.model is None:
-            raise ValueError("No model to save. Build or load a model first.")
-
-        # Create directory if it doesn't exist
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-
-        # Save the model with custom objects
-        self.model.save(path, save_format='h5')
+        return result
 
     def load_model(self, path: str) -> None:
         """Load model from file."""
@@ -275,20 +238,5 @@ class LSTMModel:
         # Load model with custom objects so AttentionLayer is recognized
         self.model = load_model(
             path,
-            compile=False,
-            custom_objects={'AttentionLayer': AttentionLayer}
+            compile=True
         )
-
-        # Always compile the model after loading to ensure it's ready for evaluation
-        self.compile_model()
-
-    def get_model_summary(self) -> str:
-        """Get model summary as a string."""
-
-        if self.model is None:
-            return "Model not built yet"
-
-        # Capture model summary as string
-        stringlist = []
-        self.model.summary(print_fn=lambda x: stringlist.append(x))
-        return '\n'.join(stringlist)

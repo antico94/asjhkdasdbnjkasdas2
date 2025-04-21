@@ -330,60 +330,46 @@ class ModelTrainer:
                     'y_test': self.dataset['y_test']
                 }
 
-            # Evaluate the model
+            # Get predictions
             self.logger.info("Evaluating model on test data")
-            metrics = self.model.evaluate(test_data['X_test'], test_data['y_test'])
+            predictions = self.model.predict(test_data['X_test'])
 
-            # Create mapping from Keras metric names to expected names
-            keras_metrics = dict(zip(self.model.model.metrics_names, metrics))
+            # Import ModelEvaluator if not already available
+            from path.to.model_evaluator import ModelEvaluator
 
-            # Extract specific metrics we need for display
-            result_metrics = {'loss': keras_metrics.get('loss', 0.0),
-                              'direction_accuracy': keras_metrics.get('direction_accuracy', 0.0),
-                              'magnitude_mae': keras_metrics.get('magnitude_mae', 0.0),
-                              'volatility_mae': keras_metrics.get('volatility_mae', 0.0)}
+            # Create evaluator
+            evaluator = ModelEvaluator(self.logger, self.output_dir)
 
-            # Calculate trading-specific metrics
-            pred = self.model.predict(test_data['X_test'])
+            # Evaluate based on model type
+            metrics = evaluator.evaluate(
+                self.model_type,
+                predictions,
+                test_data['y_test']
+            )
 
-            # Direction accuracy
-            direction_pred = (pred['direction'] > 0.5).astype(int)
-            direction_true = test_data['y_test']['direction'].astype(int)
-            win_rate = np.mean(direction_pred == direction_true)
+            # Optionally calculate trading performance metrics
+            if self.config.get('EvaluationSettings', {}).get('IncludeTradingMetrics', True):
+                trading_metrics = evaluator.evaluate_trading_performance(
+                    predictions,
+                    test_data['y_test'],
+                    os.path.join(self.output_dir, 'trading_performance.png')
+                )
 
-            # Create PnL array
-            pnl = []
-            for i in range(len(direction_pred)):
-                if direction_pred[i] == direction_true[i]:
-                    pnl.append(abs(test_data['y_test']['magnitude'][i]))
-                else:
-                    pnl.append(-abs(test_data['y_test']['magnitude'][i]))
+                # Add trading metrics to the evaluation results
+                metrics.update({
+                    'trading_win_rate': trading_metrics.get('win_rate', 0),
+                    'trading_profit_factor': trading_metrics.get('profit_factor', 0),
+                    'trading_expected_return': trading_metrics.get('expected_return', 0)
+                })
 
-            pnl = np.array(pnl)
-            winning_trades = pnl[pnl > 0]
-            losing_trades = pnl[pnl < 0]
-
-            # Avoid division by zero
-            profit_factor = (np.sum(winning_trades) / abs(np.sum(losing_trades))) if len(losing_trades) > 0 and np.sum(
-                losing_trades) != 0 else 0
-
-            # Expected return per trade
-            expected_return = np.mean(pnl) if len(pnl) > 0 else 0
-
-            # Add trading metrics to the evaluation results
-            result_metrics.update({
-                'win_rate': win_rate,
-                'profit_factor': profit_factor,
-                'expected_return': expected_return
-            })
-
-            # Generate evaluation plots
-            self._plot_confusion_matrix(direction_true, direction_pred)
-            self._plot_pnl_distribution(pnl)
-
+            # Log evaluation results
+            model_type_display = self.model_type.capitalize()
+            primary_metric = metrics.get('accuracy', metrics.get('r2', 0))
             self.logger.info(
-                f"Model evaluation completed with win rate: {win_rate:.2f}, profit factor: {profit_factor:.2f}")
-            return result_metrics
+                f"{model_type_display} model evaluation complete with primary metric: {primary_metric:.4f}"
+            )
+
+            return metrics
 
         except Exception as e:
             self.logger.error(f"Error evaluating model: {e}")
