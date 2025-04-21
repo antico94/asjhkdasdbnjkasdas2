@@ -3,84 +3,77 @@ import numpy as np
 from typing import Tuple, Dict, List, Optional, Any, Union
 from sklearn.preprocessing import StandardScaler
 import os
-import json
 
 
 class DataPreprocessor:
-    """Prepares data for machine learning models, focusing on LSTM requirements."""
-
-    def __init__(self, config, logger, data_storage, path_resolver=None):
+    def __init__(self, config, logger, data_storage, feature_service=None, path_resolver=None):
         self.config = config
         self.logger = logger
         self.data_storage = data_storage
+        self.feature_service = feature_service
         self.path_resolver = path_resolver
         self.feature_importance = None
         self.selected_features = None
         self.scalers = {}
+        self.pair = None
+        self.timeframe = None
 
-    def load_feature_importance(self, file_path: str = None) -> bool:
-        """Load feature importance information from analysis results."""
+    def set_pair_timeframe(self, pair: str, timeframe: str) -> None:
+        self.pair = pair
+        self.timeframe = timeframe
+        self.logger.info(f"Set pair to {pair} and timeframe to {timeframe}")
+
+    def load_feature_importance(self, model_type: str = "direction") -> bool:
         try:
-            if file_path is None:
-                relative_path = "Analisys/FeatureAnalysis/feature_analysis_report.txt"
-                if self.path_resolver:
-                    file_path = self.path_resolver.resolve_path(relative_path)
-                else:
-                    file_path = relative_path
-
-            if not os.path.exists(file_path):
-                self.logger.warning(f"Feature importance file not found: {file_path}")
+            if self.feature_service is None:
+                self.logger.warning("No feature service provided, using default features")
                 return False
 
-            # Parse the feature analysis report to extract importance values
-            importance_dict = {}
-            with open(file_path, 'r') as f:
-                content = f.read()
+            if not self.pair or not self.timeframe:
+                self.logger.warning("Pair or timeframe not set, using default features")
+                return False
 
-                # Find the section with feature importance
-                importance_section = content.split("TOP 20 FEATURES BY IMPORTANCE:")[1].split("SELECTED FEATURES")[0]
+            # Load feature importance from feature service
+            importance_dict = self.feature_service.get_feature_importance(
+                self.pair, self.timeframe, model_type
+            )
 
-                # Parse each line to get feature name and importance value
-                for line in importance_section.strip().split("\n")[1:]:  # Skip the header line
-                    if not line or "----" in line:
-                        continue
-                    parts = line.split(": ")
-                    if len(parts) == 2:
-                        feature = parts[0].strip()
-                        importance = float(parts[1].strip())
-                        importance_dict[feature] = importance
+            if not importance_dict:
+                self.logger.warning(f"No feature importance found for {self.pair} {self.timeframe} {model_type}")
+                return False
 
             self.feature_importance = importance_dict
 
-            # Extract selected features after redundancy removal
-            selected_section = content.split("SELECTED FEATURES AFTER REDUNDANCY REMOVAL:")[1].split("HIGHLY CORRELATED")[0]
-            selected_features = []
-            for line in selected_section.strip().split("\n")[1:]:
-                if line and "----" not in line:
-                    selected_features.append(line.strip())
-
-            self.selected_features = selected_features
+            # Get selected features
+            self.selected_features = self.feature_service.get_selected_features(
+                self.pair, self.timeframe, model_type
+            )
 
             self.logger.info(f"Loaded feature importance for {len(importance_dict)} features")
-            self.logger.info(f"Found {len(selected_features)} selected features after redundancy removal")
+            self.logger.info(f"Found {len(self.selected_features)} selected features for {model_type}")
             return True
 
         except Exception as e:
             self.logger.error(f"Error loading feature importance: {e}")
             return False
 
-    def get_selected_features(self) -> List[str]:
-        """Get list of selected features based on feature analysis."""
+    def get_selected_features(self, model_type: str = "direction") -> List[str]:
         if not self.selected_features:
-            # If no feature analysis results loaded, use a default set of known important features
-            self.logger.warning("No feature analysis results loaded, using default important features")
-            return ["atr", "rsi", "macd_histogram", "stoch_k", "candle_wick_upper",
-                    "candle_wick_lower", "close_pct_change_3", "close_pct_change_5"]
+            if self.feature_service and self.pair and self.timeframe:
+                features = self.feature_service.get_selected_features(
+                    self.pair, self.timeframe, model_type
+                )
+                if not features:
+                    self.logger.error(f"No features found for {self.pair} {self.timeframe} {model_type}")
+                    raise ValueError(f"No features available for {self.pair} {self.timeframe} {model_type}")
+                return features
+            else:
+                self.logger.error("Feature service not configured or pair/timeframe not set")
+                raise ValueError("Feature selection prerequisites not met")
 
         return self.selected_features
 
     def scale_features(self, X: pd.DataFrame, feature_importance: Optional[Dict[str, float]] = None) -> pd.DataFrame:
-        """Scale features using StandardScaler and optionally weight by importance."""
         try:
             # Create a copy to avoid modifying the original
             scaled_data = X.copy()
@@ -119,17 +112,6 @@ class DataPreprocessor:
             raise
 
     def create_sequences(self, data: pd.DataFrame, sequence_length: int = 24) -> Tuple[np.ndarray, np.ndarray]:
-        """Create sequences for LSTM model from dataframe.
-
-        Args:
-            data: DataFrame containing features
-            sequence_length: Number of time steps in each sequence
-
-        Returns:
-            Tuple of arrays (X_sequences, times) where:
-            - X_sequences has shape (n_samples, sequence_length, n_features)
-            - times has the corresponding timestamp for each sequence
-        """
         try:
             # Convert DataFrame to numpy first if it's still a DataFrame
             if isinstance(data, pd.DataFrame):
@@ -165,14 +147,6 @@ class DataPreprocessor:
             raise
 
     def prepare_multi_target(self, y_data: pd.DataFrame) -> Dict[str, np.ndarray]:
-        """Prepare multiple target variables for multi-output model.
-
-        Args:
-            y_data: DataFrame containing target columns
-
-        Returns:
-            Dict with keys for different target types and corresponding arrays
-        """
         try:
             targets = {}
 
@@ -221,17 +195,6 @@ class DataPreprocessor:
 
     def split_data_temporal(self, X: np.ndarray, y: Dict[str, np.ndarray],
                             train_ratio: float = 0.7, val_ratio: float = 0.15) -> Dict[str, Any]:
-        """Split data for training, keeping temporal order.
-
-        Args:
-            X: Feature sequences
-            y: Dictionary of target variables
-            train_ratio: Percentage for training set
-            val_ratio: Percentage for validation set
-
-        Returns:
-            Dictionary with train/val/test splits for features and targets
-        """
         try:
             n_samples = len(X)
 
@@ -271,20 +234,21 @@ class DataPreprocessor:
             self.logger.error(f"Error splitting data: {e}")
             raise
 
-    def prepare_dataset(self, pair: str = "XAUUSD", timeframe: str = "H1",
-                        dataset_type: str = "training", sequence_length: int = 24) -> Dict[str, Any]:
-        """Prepare complete dataset for model training.
-
-        Args:
-            pair: Currency pair to process
-            timeframe: Timeframe to use
-            dataset_type: Dataset type (training, validation, testing)
-            sequence_length: Length of sequences for LSTM
-
-        Returns:
-            Dictionary with complete prepared dataset
-        """
+    def prepare_dataset(self, pair: str = None, timeframe: str = None,
+                        dataset_type: str = "training", sequence_length: int = 24,
+                        model_type: str = "direction") -> Dict[str, Any]:
         try:
+            # Use provided parameters or instance variables
+            pair = pair or self.pair
+            timeframe = timeframe or self.timeframe
+
+            if not pair or not timeframe:
+                self.logger.error("Pair and timeframe must be provided")
+                return {}
+
+            # Set pair and timeframe for future reference
+            self.set_pair_timeframe(pair, timeframe)
+
             # Load processed data from storage
             X, y = self.data_storage.load_processed_data(pair, timeframe, dataset_type)
 
@@ -292,11 +256,11 @@ class DataPreprocessor:
                 self.logger.error(f"No data found for {pair} {timeframe} {dataset_type}")
                 return {}
 
-            # Get selected features if feature importance was loaded
+            # Get selected features based on model type
             if self.feature_importance is None:
-                self.load_feature_importance()
+                self.load_feature_importance(model_type)
 
-            selected_features = self.get_selected_features()
+            selected_features = self.get_selected_features(model_type)
 
             # Extract time column before filtering features
             time_col = None
@@ -331,6 +295,8 @@ class DataPreprocessor:
             # Add metadata
             dataset['feature_names'] = available_features
             dataset['times'] = sequence_times
+            dataset['pair'] = pair
+            dataset['timeframe'] = timeframe
 
             self.logger.info(f"Prepared complete dataset for {pair} {timeframe}, shape: {X_sequences.shape}")
             return dataset

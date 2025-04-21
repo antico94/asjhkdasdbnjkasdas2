@@ -4,6 +4,7 @@ from Utilities.LoggingUtils import Logger
 from Processing.ProcessorFactory import ProcessorFactory
 from Fetching.FetcherFactory import FetcherFactory
 from Utilities.PathResolver import PathResolver
+from Models.ModelFactory import ModelFactory
 import logging
 
 
@@ -18,11 +19,17 @@ class Container(containers.DeclarativeContainer):
         name='MT5App',
         level=logging.INFO,
         use_console=True,
-        console_level=logging.WARNING,  # Only warnings and errors to console
+        console_level=logging.WARNING,
         db_config=providers.Callable(
             lambda c: c['Database'],
             c=config
         )
+    )
+
+    # Path resolver
+    path_resolver = providers.Singleton(
+        PathResolver,
+        config=config
     )
 
     # Fetcher factory
@@ -39,13 +46,23 @@ class Container(containers.DeclarativeContainer):
         logger=logger
     )
 
-    path_resolver = providers.Singleton(
-        PathResolver,
-        config=config
-    )
-
     # Feature service
     feature_service = providers.Callable(
         lambda factory: factory.create_feature_service(),
+        factory=processor_factory
+    )
+
+    # Model factory
+    model_factory = providers.Singleton(
+        ModelFactory,
+        config=config,
+        logger=logger,
+        feature_service=feature_service,
+        path_resolver=path_resolver
+    )
+
+    # Data storage for convenience
+    data_storage = providers.Callable(
+        lambda factory: factory.create_data_storage(),
         factory=processor_factory
     )

@@ -1,9 +1,8 @@
 import os
 import numpy as np
-import pandas as pd
 import tensorflow as tf
 import matplotlib.pyplot as plt
-from typing import Dict, List, Any, Tuple, Optional, Union
+from typing import Dict, Any, Tuple
 from datetime import datetime
 
 from Models.LSTMModel import LSTMModel
@@ -11,8 +10,6 @@ from Training.DataPreprocessor import DataPreprocessor
 
 
 class LossHistory(tf.keras.callbacks.Callback):
-    """Custom callback to track training metrics and trading performance."""
-
     def __init__(self, validation_data: Tuple, output_dir: str = 'model_training'):
         super().__init__()
         self.validation_data = validation_data
@@ -52,7 +49,6 @@ class LossHistory(tf.keras.callbacks.Callback):
                   f"Expected return: {trading_metrics['expected_return']:.4f}")
 
     def calculate_trading_metrics(self) -> Dict[str, float]:
-        """Calculate trading-specific performance metrics on validation data."""
         # Get validation data
         X_val, y_val_dict = self.validation_data
 
@@ -100,7 +96,6 @@ class LossHistory(tf.keras.callbacks.Callback):
         }
 
     def plot_history(self, save_path: str = None) -> None:
-        """Plot training history and metrics."""
         # Create figure with multiple subplots
         fig, axes = plt.subplots(3, 1, figsize=(10, 15))
 
@@ -153,58 +148,76 @@ class LossHistory(tf.keras.callbacks.Callback):
 
 
 class ModelTrainer:
-    """Handles the complete model training workflow."""
-
     def __init__(self, config, logger, data_preprocessor: DataPreprocessor, model: LSTMModel = None):
-        """Initialize the model trainer.
-
-        Args:
-            config: Application configuration
-            logger: Logger instance
-            data_preprocessor: Preprocessor for data preparation
-            model: Optional pre-built LSTM model
-        """
         self.config = config
         self.logger = logger
         self.data_preprocessor = data_preprocessor
         self.model = model
 
-        # Setup output directory for models and visualizations
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.output_dir = f"ModelTraining_{timestamp}"
-        os.makedirs(self.output_dir, exist_ok=True)
+        # Setup base output directory for models
+        self.base_output_dir = "TrainedModels"
+        os.makedirs(self.base_output_dir, exist_ok=True)
+
+        # Instance-specific output directory
+        self.timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.output_dir = None
+
+        # Default pair and timeframe
+        self.pair = None
+        self.timeframe = None
+        self.model_type = None
 
         # Training history
         self.history = None
         self.dataset = None
 
-    def prepare_training_data(self, pair: str = "XAUUSD", timeframe: str = "H1",
-                              dataset_type: str = "training", sequence_length: int = 24) -> Dict[str, Any]:
-        """Prepare data for model training.
+    def set_model_type(self, model_type: str) -> None:
+        self.model_type = model_type
+        self.logger.info(f"Set model type to {model_type}")
 
-        Args:
-            pair: Currency pair
-            timeframe: Timeframe (M15, H1, etc.)
-            dataset_type: Dataset type (training, validation, testing)
-            sequence_length: Sequence length for LSTM
+    def setup_output_dir(self) -> None:
+        if not self.pair or not self.timeframe or not self.model_type:
+            self.logger.error("Pair, timeframe, and model type must be set before creating output directory")
+            raise ValueError("Missing required parameters: pair, timeframe, and model type must be set")
 
-        Returns:
-            Dictionary with prepared dataset
-        """
+        self.output_dir = os.path.join(
+            self.base_output_dir,
+            f"{self.pair}_{self.timeframe}_{self.model_type}_{self.timestamp}"
+        )
+
+        os.makedirs(self.output_dir, exist_ok=True)
+        self.logger.info(f"Created output directory: {self.output_dir}")
+
+    def prepare_training_data(self, pair: str = None, timeframe: str = None,
+                              dataset_type: str = "training", sequence_length: int = 24,
+                              model_type: str = None) -> Dict[str, Any]:
         try:
-            self.logger.info(f"Preparing training data for {pair} {timeframe}")
+            # Set pair and timeframe
+            self.pair = pair or self.pair
+            self.timeframe = timeframe or self.timeframe
+            self.model_type = model_type or self.model_type or "direction"
+
+            if not self.pair or not self.timeframe:
+                self.logger.error("Pair and timeframe must be provided")
+                raise ValueError("Missing required parameters: pair and timeframe")
+
+            # Create output directory
+            self.setup_output_dir()
+
+            self.logger.info(f"Preparing training data for {self.pair} {self.timeframe}")
 
             # Use data preprocessor to prepare the dataset
             dataset = self.data_preprocessor.prepare_dataset(
-                pair=pair,
-                timeframe=timeframe,
+                pair=self.pair,
+                timeframe=self.timeframe,
                 dataset_type=dataset_type,
-                sequence_length=sequence_length
+                sequence_length=sequence_length,
+                model_type=self.model_type
             )
 
             if not dataset:
                 self.logger.error("Failed to prepare dataset")
-                return {}
+                raise ValueError(f"Failed to prepare dataset for {self.pair} {self.timeframe} {self.model_type}")
 
             self.dataset = dataset
 
@@ -220,20 +233,10 @@ class ModelTrainer:
 
     def train_model(self, epochs: int = 100, batch_size: int = 32,
                     continued_training: bool = False) -> Dict[str, Any]:
-        """Train the LSTM model.
-
-        Args:
-            epochs: Number of training epochs
-            batch_size: Batch size for training
-            continued_training: Whether to continue training an existing model
-
-        Returns:
-            Training history
-        """
         try:
             if self.dataset is None:
                 self.logger.error("No dataset prepared. Call prepare_training_data first.")
-                return {}
+                raise ValueError("No dataset available. Call prepare_training_data first.")
 
             # Initialize model if not provided
             if self.model is None or not continued_training:
@@ -298,7 +301,7 @@ class ModelTrainer:
             self.history = history
 
             # Save the final model
-            self.model.save_model(os.path.join(self.output_dir, 'final_model.h5'))
+            self.save_model()
 
             # Plot training history
             trading_metrics.plot_history()
@@ -311,14 +314,6 @@ class ModelTrainer:
             raise
 
     def evaluate_model(self, test_data: Dict[str, Any] = None) -> Dict[str, float]:
-        """Evaluate the model on test data.
-
-        Args:
-            test_data: Optional test data to use instead of the test split from dataset
-
-        Returns:
-            Dictionary with evaluation metrics
-        """
         try:
             if self.model is None:
                 self.logger.error("No model available. Train or load a model first.")
@@ -395,7 +390,6 @@ class ModelTrainer:
             raise
 
     def _plot_confusion_matrix(self, y_true: np.ndarray, y_pred: np.ndarray) -> None:
-        """Plot confusion matrix for direction prediction."""
         from sklearn.metrics import confusion_matrix
         import seaborn as sns
 
@@ -410,7 +404,6 @@ class ModelTrainer:
         plt.close()
 
     def _plot_pnl_distribution(self, pnl: np.ndarray) -> None:
-        """Plot distribution of profit/loss."""
         plt.figure(figsize=(10, 6))
         plt.hist(pnl, bins=20, alpha=0.7, color='blue')
         plt.axvline(x=0, color='r', linestyle='--')
@@ -431,26 +424,65 @@ class ModelTrainer:
         plt.close()
 
     def save_model(self, path: str = None) -> None:
-        """Save the model to file."""
         if self.model is None:
             self.logger.error("No model to save")
             return
 
+        if not self.output_dir:
+            self.setup_output_dir()
+
         if path is None:
-            path = os.path.join(self.output_dir, 'final_model.h5')
+            model_name = f"final_model.h5"
+            if self.pair and self.timeframe and self.model_type:
+                model_name = f"{self.pair}_{self.timeframe}_{self.model_type}_model.h5"
+            path = os.path.join(self.output_dir, model_name)
 
         self.model.save_model(path)
         self.logger.info(f"Model saved to {path}")
 
+        # Save model metadata
+        self._save_model_metadata()
+
+    def _save_model_metadata(self) -> None:
+        metadata = {
+            "pair": self.pair,
+            "timeframe": self.timeframe,
+            "model_type": self.model_type,
+            "timestamp": self.timestamp,
+            "features": self.dataset.get("feature_names", []),
+            "training_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        }
+
+        # Save metadata to JSON file
+        import json
+        metadata_path = os.path.join(self.output_dir, "model_metadata.json")
+        with open(metadata_path, "w") as f:
+            json.dump(metadata, f, indent=4)
+
+        self.logger.info(f"Model metadata saved to {metadata_path}")
+
     def load_model(self, path: str) -> None:
-        """Load a model from file."""
         try:
             if not os.path.exists(path):
                 self.logger.error(f"Model file not found: {path}")
                 return
 
+            # Extract model information from path if possible
+            model_dir = os.path.dirname(path)
+            model_filename = os.path.basename(path)
+
+            # Try to extract pair, timeframe and model_type from directory name
+            dir_name = os.path.basename(model_dir)
+            parts = dir_name.split('_')
+            if len(parts) >= 3:
+                self.pair = parts[0]
+                self.timeframe = parts[1]
+                self.model_type = parts[2]
+                self.logger.info(f"Extracted model info: {self.pair} {self.timeframe} {self.model_type}")
+
             # Get the input shape from saved model
-            temp_model = tf.keras.models.load_model(path, compile=False)
+            temp_model = tf.keras.models.load_model(path, compile=False,
+                                                    custom_objects={'AttentionLayer': LSTMModel.AttentionLayer})
             input_shape = temp_model.input_shape[1:]  # Remove batch dimension
             n_features = input_shape[1]
 
@@ -460,7 +492,21 @@ class ModelTrainer:
             # Load the saved weights
             self.model.load_model(path)
 
+            # Load metadata if available
+            metadata_path = os.path.join(model_dir, "model_metadata.json")
+            if os.path.exists(metadata_path):
+                import json
+                with open(metadata_path, "r") as f:
+                    metadata = json.load(f)
+
+                self.pair = metadata.get("pair", self.pair)
+                self.timeframe = metadata.get("timeframe", self.timeframe)
+                self.model_type = metadata.get("model_type", self.model_type)
+
+                self.logger.info(f"Loaded model metadata: {self.pair} {self.timeframe} {self.model_type}")
+
             self.logger.info(f"Model loaded from {path} with input shape {input_shape}")
+            self.setup_output_dir()  # Set up new output directory for this instance
 
         except Exception as e:
             self.logger.error(f"Error loading model: {e}")
