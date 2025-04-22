@@ -173,9 +173,12 @@ def handle_train_model(cli: TradingBotCLI, logger: Logger, model_factory: ModelF
             train_config = model_factory.config.get('TrainingSettings', {})
             pair = train_config.get('DefaultPair', 'XAUUSD')
             timeframe = train_config.get('DefaultTimeframe', 'H1')
-            model_selection = train_config.get('ModelSelection', 'Both')
+            model_selection = train_config.get('ModelSelection', 'Both').lower()  # Convert to lowercase
 
+            # Print debug information
             print(f"Starting model training for {CurrencyPairs.display_name(pair)} {timeframe}...")
+            print(f"Model selection: {model_selection}")
+
             _train_selected_models(model_trainer, logger, pair, timeframe, model_selection)
 
         elif train_action == "change_config":
@@ -192,12 +195,18 @@ def handle_train_model(cli: TradingBotCLI, logger: Logger, model_factory: ModelF
                 logger.info("Configuration change cancelled")
                 print("Configuration change cancelled")
 
+
 def _train_selected_models(model_trainer, logger, pair, timeframe, model_selection):
     """Helper function to train selected models."""
     try:
+        # Debug print
+        print(f"Model selection value: '{model_selection}'")
+
         trained_models = {}
 
         # Based on model selection, train appropriate models
+        model_selection = str(model_selection).lower()  # Ensure string and lowercase
+
         if model_selection in ['direction', 'both']:
             # Train direction model (classification)
             print(f"Training Direction model...")
@@ -217,22 +226,6 @@ def _train_selected_models(model_trainer, logger, pair, timeframe, model_selecti
                 print(f"✓ Successfully trained Magnitude model")
             else:
                 print("✗ Failed to train Magnitude model")
-
-        # Summary of training
-        if trained_models:
-            print("\n=== Training Summary ===")
-            print(f"Currency Pair: {CurrencyPairs.display_name(pair)}")
-            print(f"Timeframe: {timeframe}")
-            print(f"Models Trained: {len(trained_models)}")
-
-            for model_name, model in trained_models.items():
-                print(f"\n{model_name.upper()} MODEL")
-                for metric, value in model.metrics.items():
-                    print(f"  {metric}: {value:.4f}")
-
-            print("\nModels saved to TrainedModels directory")
-        else:
-            print("No models were successfully trained")
 
     except Exception as e:
         logger.error(f"Error training models: {e}")
