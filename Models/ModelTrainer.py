@@ -32,8 +32,18 @@ class ModelTrainer:
                 self.logger.error(f"Target {target} not found in training data")
                 raise ValueError(f"Target {target} not found in training data")
 
-            # Filter to only include the selected features
-            model_type = "direction" if "direction" in target or "signal" in target else "magnitude"
+            # Store original target data for validation
+            self.target_name = target
+
+            # Handle direction targets properly
+            is_direction = "direction" in target or "signal" in target
+            model_type = "direction" if is_direction else "magnitude"
+
+            # Log information about the target
+            self.logger.info(f"Preparing data for {model_type} model with target {target}")
+            if is_direction and y_train[target].min() < 0:
+                self.logger.info(
+                    f"Direction target contains values: min={y_train[target].min()}, max={y_train[target].max()}")
 
             # Remove 'time' column from training data
             if 'time' in X_train.columns:

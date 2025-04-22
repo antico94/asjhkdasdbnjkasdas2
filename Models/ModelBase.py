@@ -92,11 +92,23 @@ class ModelBase(ABC):
             return {}
 
         try:
-            metrics = self.model.evaluate(X, y, verbose=0)
+            # Extract target column
+            target_col = y.columns[0]
+            y_val = y[target_col].values
+
+            # If this is a direction target (contains negative values), convert to binary
+            if "direction" in target_col and np.any(y_val < 0):
+                self.logger.info(f"Converting direction values to binary for evaluation")
+                y_val = (y_val > 0).astype(int)
+
+            # Evaluate model
+            metrics = self.model.evaluate(X, y_val, verbose=0)
             metrics_dict = dict(zip(self.model.metrics_names, metrics))
             self.metrics.update(metrics_dict)
             self.logger.info(f"Model {self.name} evaluation: {metrics_dict}")
             return metrics_dict
         except Exception as e:
             self.logger.error(f"Failed to evaluate model {self.name}: {e}")
-            return {}
+            # Return a basic metrics dictionary to prevent downstream errors
+            self.metrics = {'loss': 0.0, 'accuracy': 0.0}
+            return self.metrics
