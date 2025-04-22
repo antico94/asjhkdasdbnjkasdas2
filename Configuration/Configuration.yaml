@@ -88,3 +88,33 @@ GoldTradingSettings:
         Threshold: 0.001  # 0.1% price movement threshold for direction
 Paths:
   FeatureAnalysisReport: "FeatureAnalysis/feature_analysis_report.txt"
+# Add this to Configuration/Configuration.yaml
+TrainingSettings:
+  DefaultPair: "XAUUSD"
+  DefaultTimeframe: "H1"
+  ModelSelection: "Both"
+  use_feature_selection: true
+  ModelConfig:
+    RandomForest:
+      hidden_units: [64, 32]
+      dropout: 0.2
+      learning_rate: 0.001
+      batch_size: 32
+      epochs: 50
+      early_stopping_patience: 10
+    GradientBoosting:
+      hidden_units: [128, 64, 32]
+      dropout: 0.3
+      learning_rate: 0.001
+      batch_size: 32
+      epochs: 100
+      early_stopping_patience: 15
+    LSTM:
+      units: [64, 32]
+      dropout: 0.2
+      recurrent_dropout: 0.2
+      learning_rate: 0.001
+      batch_size: 32
+      epochs: 100
+      early_stopping_patience: 15
+      sequence_length: 10

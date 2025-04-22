@@ -1,4 +1,8 @@
+from Configuration.Constants import CurrencyPairs
 from dependency_injector.wiring import inject, Provide
+
+from Models.ModelFactory import ModelFactory
+from Models.ModelTrainer import ModelTrainer
 from Utilities.Container import Container
 from Utilities.ConfigurationUtils import Config
 from Utilities.LoggingUtils import Logger
@@ -16,6 +20,8 @@ def main(
         fetcher_factory: FetcherFactory = Provide[Container.fetcher_factory],
         processor_factory: ProcessorFactory = Provide[Container.processor_factory],
         feature_service: FeatureService = Provide[Container.feature_service],
+        model_factory: ModelFactory = Provide[Container.model_factory],  # Add this parameter
+        data_storage=Provide[Container.data_storage],  # Add this parameter
 ) -> None:
     logger.info('Application started')
     # Log configuration values
@@ -48,6 +54,8 @@ def main(
             handle_process_data(cli, logger, processor_factory)
         elif action == AppMode.ANALYZE_FEATURES.value:
             handle_analyze_features(cli, logger, processor_factory, feature_service)
+        elif action == AppMode.TRAIN_MODEL.value:
+            handle_train_model(cli, logger, model_factory, data_storage)
         else:
             logger.info(f'Selected action: {action}')
 
@@ -146,6 +154,89 @@ def handle_process_data(cli: TradingBotCLI, logger: Logger, processor_factory: P
                 logger.info("Dataset selection cancelled")
                 print("Dataset selection cancelled")
 
+def handle_train_model(cli: TradingBotCLI, logger: Logger, model_factory: ModelFactory, data_storage) -> None:
+    """Handle model training flow"""
+    # Create trainer
+    model_trainer = ModelTrainer(model_factory.config, logger, model_factory, data_storage)
+
+    while True:
+        train_action = cli.train_model_menu()
+
+        if train_action == "back":
+            logger.info("Returning to main menu")
+            break
+
+        elif train_action == "train_current":
+            logger.info("Training with current configuration")
+
+            # Get current training settings
+            train_config = model_factory.config.get('TrainingSettings', {})
+            pair = train_config.get('DefaultPair', 'XAUUSD')
+            timeframe = train_config.get('DefaultTimeframe', 'H1')
+            model_selection = train_config.get('ModelSelection', 'Both')
+
+            print(f"Starting model training for {CurrencyPairs.display_name(pair)} {timeframe}...")
+            _train_selected_models(model_trainer, logger, pair, timeframe, model_selection)
+
+        elif train_action == "change_config":
+            logger.info("Changing training configuration")
+            config = cli.change_training_config_menu()
+
+            if config:
+                logger.info(f"New configuration: {config}")
+                print(f"Starting training with new configuration...")
+
+                _train_selected_models(model_trainer, logger,
+                                       config['pair'], config['timeframe'], config['models'])
+            else:
+                logger.info("Configuration change cancelled")
+                print("Configuration change cancelled")
+
+def _train_selected_models(model_trainer, logger, pair, timeframe, model_selection):
+    """Helper function to train selected models."""
+    try:
+        trained_models = {}
+
+        # Based on model selection, train appropriate models
+        if model_selection in ['direction', 'both']:
+            # Train direction model (classification)
+            print(f"Training Direction model...")
+            model = model_trainer.train_model('RandomForest', pair, timeframe, 'direction_1')
+            if model:
+                trained_models['direction'] = model
+                print(f"✓ Successfully trained Direction model")
+            else:
+                print("✗ Failed to train Direction model")
+
+        if model_selection in ['magnitude', 'both']:
+            # Train magnitude model (regression)
+            print(f"Training Magnitude model...")
+            model = model_trainer.train_model('GradientBoosting', pair, timeframe, 'future_price_1')
+            if model:
+                trained_models['magnitude'] = model
+                print(f"✓ Successfully trained Magnitude model")
+            else:
+                print("✗ Failed to train Magnitude model")
+
+        # Summary of training
+        if trained_models:
+            print("\n=== Training Summary ===")
+            print(f"Currency Pair: {CurrencyPairs.display_name(pair)}")
+            print(f"Timeframe: {timeframe}")
+            print(f"Models Trained: {len(trained_models)}")
+
+            for model_name, model in trained_models.items():
+                print(f"\n{model_name.upper()} MODEL")
+                for metric, value in model.metrics.items():
+                    print(f"  {metric}: {value:.4f}")
+
+            print("\nModels saved to TrainedModels directory")
+        else:
+            print("No models were successfully trained")
+
+    except Exception as e:
+        logger.error(f"Error training models: {e}")
+        print(f"✗ Error: {str(e)}")
 
 def handle_analyze_features(
         cli: TradingBotCLI,

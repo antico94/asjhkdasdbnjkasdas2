@@ -15,11 +15,6 @@ class FeatureService:
         self.logger = logger
         self.data_storage = data_storage
         self.feature_table = "SelectedFeatures"
-        # It's generally better practice to create the engine once if possible,
-        # or manage its lifecycle carefully. Accessing a "private" method
-        # like _create_engine might be okay depending on DataStorage's design,
-        # but consider if DataStorage should expose the engine directly or
-        # provide connection methods.
         self.engine: Engine = self.data_storage._create_engine() # Added type hint
 
     def get_selected_features(

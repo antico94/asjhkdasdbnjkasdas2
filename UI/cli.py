@@ -224,3 +224,92 @@ class TradingBotCLI:
             'timeframe': timeframe,
             'target': target
         }
+
+    def train_model_menu(self) -> str:
+        """Menu for model training options."""
+        # Display current configuration
+        train_config = self.config.get('TrainingSettings', {})
+        pair_code = train_config.get('DefaultPair', 'XAUUSD')
+        timeframe = train_config.get('DefaultTimeframe', 'H1')
+        model_selection = train_config.get('ModelSelection', 'Both')
+
+        # Create a formatted display of current configuration
+        config_display = [
+            "Current Training Configuration:",
+            f"• Currency Pair: {CurrencyPairs.display_name(pair_code)}",
+            f"• Timeframe: {timeframe}",
+            f"• Models: {model_selection}"
+        ]
+
+        for line in config_display:
+            print(line)
+        print()  # Add empty line for better readability
+
+        choices = [
+            Choice("Start Training with current configuration", "train_current"),
+            Choice("Change configuration", "change_config"),
+            Choice("Go back", "back")
+        ]
+
+        return questionary.select(
+            'Select an option:',
+            choices=choices
+        ).ask() or 'back'
+
+    def change_training_config_menu(self) -> Optional[Dict[str, Any]]:
+        """Menu for changing the training configuration."""
+        train_config = self.config.get('TrainingSettings', {})
+        result = {}
+
+        # 1. Select currency pair
+        pairs = [CurrencyPairs.XAUUSD, CurrencyPairs.USDJPY, CurrencyPairs.EURUSD, CurrencyPairs.GBPUSD]
+
+        # If there's only one currency pair, use it without asking
+        if len(pairs) == 1:
+            result['pair'] = pairs[0]
+            print(f"Using currency pair: {CurrencyPairs.display_name(pairs[0])}")
+        else:
+            pair_choices = [Choice(CurrencyPairs.display_name(p), p) for p in pairs]
+            selected_pair = questionary.select(
+                'Select currency pair:',
+                choices=pair_choices
+            ).ask()
+
+            if not selected_pair:
+                return None
+            result['pair'] = selected_pair
+
+        # 2. Select timeframe
+        timeframes = [tf.value for tf in TimeFrames]
+
+        # If there's only one timeframe, use it without asking
+        if len(timeframes) == 1:
+            result['timeframe'] = timeframes[0]
+            print(f"Using timeframe: {timeframes[0]}")
+        else:
+            timeframe = questionary.select(
+                'Select timeframe:',
+                choices=timeframes
+            ).ask()
+
+            if not timeframe:
+                return None
+            result['timeframe'] = timeframe
+
+        # 3. Select model type(s)
+        model_choices = [
+            Choice("Direction Model (Classification)", "direction"),
+            Choice("Magnitude Model (Regression)", "magnitude"),
+            Choice("Both Models", "both")
+        ]
+
+        selected_models = questionary.select(
+            'Select model type to train:',
+            choices=model_choices
+        ).ask()
+
+        if not selected_models:
+            return None
+        result['models'] = selected_models
+
+        return result
