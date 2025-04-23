@@ -12,6 +12,7 @@ from Models.DirectionClassificationModel import DirectionClassificationModel
 from Models.LTSMModel import LSTMModel
 from Models.ModelBase import ModelBase
 from Models.ModelFactory import ModelFactory
+from Models.PricePredictionModel import PricePredictionModel
 from Processing.DataStorage import DataStorage
 from Utilities.ConfigurationUtils import Config
 from Utilities.LoggingUtils import Logger
@@ -330,6 +331,17 @@ class BacktestManager:
             # Create a copy to avoid modifying the original
             backtest_data = data.copy()
 
+            # Log column names for debugging
+            self.logger.info(f"Data columns: {list(backtest_data.columns)}")
+
+            # Check if all required OHLC columns exist
+            required_columns = ['open', 'high', 'low', 'close']
+            missing_ohlc = [col for col in required_columns if col not in backtest_data.columns]
+
+            if missing_ohlc:
+                self.logger.error(f"Missing required OHLC columns: {missing_ohlc}")
+                raise ValueError(f"Missing required OHLC columns: {missing_ohlc}")
+
             # Generate predictions
             if 'direction' in models:
                 try:
@@ -377,7 +389,6 @@ class BacktestManager:
                     backtest_data['direction_pred'] = 0  # Neutral
                     backtest_data['confidence'] = 0.5
 
-            # Similar changes for magnitude predictions...
             if 'magnitude' in models:
                 try:
                     feature_cols = models['magnitude'].feature_columns
@@ -415,22 +426,53 @@ class BacktestManager:
                 self.logger.warning("ATR not found in data, using default values")
                 backtest_data['atr'] = (backtest_data['high'] - backtest_data['low']).rolling(14).mean()
 
-            # Rename columns to match backtesting.py requirements
-            # OHLC columns must be capitalized
-            backtest_data = backtest_data.rename(columns={
-                'open': 'Open',
-                'high': 'High',
-                'low': 'Low',
-                'close': 'Close',
-                'tick_volume': 'Volume'
-            })
+            # Rename columns to match backtesting.py requirements - using lowercase source columns
+            rename_dict = {}
+            if 'open' in backtest_data.columns:
+                rename_dict['open'] = 'Open'
+            if 'high' in backtest_data.columns:
+                rename_dict['high'] = 'High'
+            if 'low' in backtest_data.columns:
+                rename_dict['low'] = 'Low'
+            if 'close' in backtest_data.columns:
+                rename_dict['close'] = 'Close'
+            if 'tick_volume' in backtest_data.columns:
+                rename_dict['tick_volume'] = 'Volume'
+
+            # Only rename columns that exist
+            backtest_data = backtest_data.rename(columns=rename_dict)
+
+            # Verify required columns exist after renaming
+            backtest_columns = list(backtest_data.columns)
+            self.logger.info(f"Backtest data columns after renaming: {backtest_columns}")
+
+            required_backtest_columns = ['Open', 'High', 'Low', 'Close']
+            missing_required = [col for col in required_backtest_columns if col not in backtest_columns]
+
+            if missing_required:
+                self.logger.error(f"Missing required columns for Backtest: {missing_required}")
+                raise ValueError(f"Missing required columns for Backtest: {missing_required}")
 
             # Set index to time for backtesting
-            backtest_data = backtest_data.set_index('time')
+            if 'time' in backtest_data.columns:
+                backtest_data = backtest_data.set_index('time')
+            else:
+                self.logger.warning("No 'time' column found for index, using default index")
 
             # Drop rows with NaN values in essential columns only
-            essential_cols = ['Open', 'High', 'Low', 'Close', 'direction_pred', 'magnitude_pred', 'atr']
-            backtest_data = backtest_data.dropna(subset=[col for col in essential_cols if col in backtest_data.columns])
+            essential_cols = ['Open', 'High', 'Low', 'Close']
+            if 'direction_pred' in backtest_data.columns:
+                essential_cols.append('direction_pred')
+            if 'magnitude_pred' in backtest_data.columns:
+                essential_cols.append('magnitude_pred')
+            if 'atr' in backtest_data.columns:
+                essential_cols.append('atr')
+
+            # Filter to columns that exist in the dataframe
+            essential_cols = [col for col in essential_cols if col in backtest_data.columns]
+
+            # Drop NaN rows only in essential columns
+            backtest_data = backtest_data.dropna(subset=essential_cols)
 
             return backtest_data
 
