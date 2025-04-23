@@ -8,6 +8,8 @@ import logging
 import matplotlib.pyplot as plt
 from datetime import datetime
 
+from Models.DirectionClassificationModel import DirectionClassificationModel
+from Models.LTSMModel import LSTMModel
 from Models.ModelBase import ModelBase
 from Models.ModelFactory import ModelFactory
 from Processing.DataStorage import DataStorage
@@ -136,7 +138,7 @@ class BacktestManager:
                 raise ValueError(f"No test data available for {pair} {timeframe}")
 
             # We need price data in OHLC format for backtesting
-            ohlc_data = self.data_storage.get_raw_ohlc_data(pair, timeframe, "testing")
+            ohlc_data = self.get_raw_ohlc_data(pair, timeframe, "testing")
 
             if ohlc_data is None or ohlc_data.empty:
                 self.logger.error(f"No OHLC data available for {pair} {timeframe}")
@@ -165,14 +167,6 @@ class BacktestManager:
     def get_raw_ohlc_data(self, pair: str, timeframe: str, dataset_type: str) -> pd.DataFrame:
         """
         Get raw OHLC data from the database for a specific symbol and timeframe.
-
-        Args:
-            pair: The currency pair symbol
-            timeframe: The timeframe (e.g., 'H1', 'D1')
-            dataset_type: The dataset type ('training', 'validation', 'testing')
-
-        Returns:
-            DataFrame with OHLC data
         """
         try:
             # Create table name
@@ -181,7 +175,8 @@ class BacktestManager:
             # Query to get all data
             query = f"SELECT * FROM {table_name} ORDER BY time"
 
-            with self.engine.connect() as conn:
+            # Use data_storage's engine
+            with self.data_storage.engine.connect() as conn:
                 ohlc_data = pd.read_sql(query, conn)
 
             if ohlc_data.empty:
@@ -330,47 +325,90 @@ class BacktestManager:
             raise
 
     def add_predictions(self, data: pd.DataFrame, models: Dict[str, ModelBase]) -> pd.DataFrame:
-        """
-        Add model predictions to the dataset for backtesting.
-        """
+        """Add model predictions to the dataset for backtesting."""
         try:
             # Create a copy to avoid modifying the original
             backtest_data = data.copy()
 
             # Generate predictions
             if 'direction' in models:
-                # Get features excluding OHLC columns
-                features = backtest_data.drop(
-                    ['time', 'open', 'high', 'low', 'close', 'tick_volume', 'spread', 'real_volume'],
-                    axis=1, errors='ignore')
+                try:
+                    # Get features excluding OHLC columns but keep tick_volume
+                    # Make sure tick_volume is included if it's in the data
+                    feature_cols = models['direction'].feature_columns
 
-                # Get direction predictions
-                direction_preds = models['direction'].predict(features)
+                    # Check that all required features are in the data
+                    missing_cols = [col for col in feature_cols if col not in backtest_data.columns]
+                    if missing_cols:
+                        self.logger.warning(f"Missing columns for prediction: {missing_cols}")
+                        # Create default direction predictions
+                        self.logger.info("Using default neutral predictions for direction")
+                        backtest_data['direction_pred'] = 0
+                        backtest_data['confidence'] = 0.5
+                    else:
+                        # Create features DataFrame with exactly the columns needed
+                        features = backtest_data[feature_cols].copy()
 
-                # Convert to integer predictions (-1, 0, 1)
-                if len(direction_preds.shape) > 1 and direction_preds.shape[1] > 1:
-                    # If probabilities, get the class with highest probability
-                    backtest_data['direction_pred'] = np.argmax(direction_preds, axis=1) - 1  # Convert 0,1,2 to -1,0,1
-                    backtest_data['confidence'] = np.max(direction_preds, axis=1)
-                else:
-                    # Binary model (0/1) convert to -1/1
-                    backtest_data['direction_pred'] = (direction_preds > 0.5).astype(int) * 2 - 1
-                    backtest_data['confidence'] = np.where(direction_preds > 0.5, direction_preds, 1 - direction_preds)
+                        # Get direction predictions
+                        direction_preds = models['direction'].predict(features)
 
-                self.logger.info(f"Added direction predictions to backtest data")
+                        # Convert to integer predictions (-1, 0, 1)
+                        if len(direction_preds.shape) > 1 and direction_preds.shape[1] > 1:
+                            # If probabilities, get the class with highest probability
+                            backtest_data['direction_pred'] = np.argmax(direction_preds,
+                                                                        axis=1) - 1  # Convert 0,1,2 to -1,0,1
+                            backtest_data['confidence'] = np.max(direction_preds, axis=1)
+                        else:
+                            # Binary model (0/1) convert to -1/1
+                            if len(direction_preds) > 0:
+                                backtest_data['direction_pred'] = (direction_preds > 0.5).astype(int) * 2 - 1
+                                backtest_data['confidence'] = np.where(direction_preds > 0.5, direction_preds,
+                                                                       1 - direction_preds)
+                            else:
+                                # Handle empty predictions
+                                self.logger.warning("Empty direction predictions, using defaults")
+                                backtest_data['direction_pred'] = 0
+                                backtest_data['confidence'] = 0.5
 
+                    self.logger.info(f"Added direction predictions to backtest data")
+                except Exception as e:
+                    self.logger.error(f"Failed to generate direction predictions: {e}")
+                    # Add default values to allow backtest to continue
+                    backtest_data['direction_pred'] = 0  # Neutral
+                    backtest_data['confidence'] = 0.5
+
+            # Similar changes for magnitude predictions...
             if 'magnitude' in models:
-                # Get features excluding OHLC columns
-                features = backtest_data.drop(
-                    ['time', 'open', 'high', 'low', 'close', 'tick_volume', 'spread', 'real_volume'],
-                    axis=1, errors='ignore')
+                try:
+                    feature_cols = models['magnitude'].feature_columns
 
-                # Get magnitude predictions (expected price movement)
-                magnitude_preds = models['magnitude'].predict(features)
+                    # Check that all required features are in the data
+                    missing_cols = [col for col in feature_cols if col not in backtest_data.columns]
+                    if missing_cols:
+                        self.logger.warning(f"Missing columns for magnitude prediction: {missing_cols}")
+                        # Create default magnitude predictions
+                        self.logger.info("Using default 0 predictions for magnitude")
+                        backtest_data['magnitude_pred'] = 0
+                    else:
+                        # Create features DataFrame with exactly the columns needed
+                        features = backtest_data[feature_cols].copy()
 
-                # Add to dataset
-                backtest_data['magnitude_pred'] = magnitude_preds
-                self.logger.info(f"Added magnitude predictions to backtest data")
+                        # Get magnitude predictions
+                        magnitude_preds = models['magnitude'].predict(features)
+
+                        # Add to dataset
+                        if len(magnitude_preds) > 0:
+                            backtest_data['magnitude_pred'] = magnitude_preds
+                        else:
+                            # Handle empty predictions
+                            self.logger.warning("Empty magnitude predictions, using defaults")
+                            backtest_data['magnitude_pred'] = 0
+
+                    self.logger.info(f"Added magnitude predictions to backtest data")
+                except Exception as e:
+                    self.logger.error(f"Failed to generate magnitude predictions: {e}")
+                    # Add default values to allow backtest to continue
+                    backtest_data['magnitude_pred'] = 0
 
             # Ensure all required columns for strategy are present
             if 'atr' not in backtest_data.columns:
@@ -390,8 +428,9 @@ class BacktestManager:
             # Set index to time for backtesting
             backtest_data = backtest_data.set_index('time')
 
-            # Drop rows with NaN values
-            backtest_data = backtest_data.dropna()
+            # Drop rows with NaN values in essential columns only
+            essential_cols = ['Open', 'High', 'Low', 'Close', 'direction_pred', 'magnitude_pred', 'atr']
+            backtest_data = backtest_data.dropna(subset=[col for col in essential_cols if col in backtest_data.columns])
 
             return backtest_data
 

@@ -16,6 +16,7 @@ from sklearn.metrics import (
 )
 from Models.ModelBase import ModelBase
 
+
 class DirectionClassificationModel(ModelBase):
     CLASS_DOWN = 0
     CLASS_NEUTRAL = 1
@@ -27,7 +28,8 @@ class DirectionClassificationModel(ModelBase):
 
     def __init__(self, config: dict, logger: logging.Logger, name: str = "direction_model"):
         super().__init__(config, logger, name)
-        model_specific_config = config.get('TrainingSettings', {}).get('ModelConfig', {}).get(self.__class__.__name__, {})
+        model_specific_config = config.get('TrainingSettings', {}).get('ModelConfig', {}).get(self.__class__.__name__,
+                                                                                              {})
         if not model_specific_config:
             model_specific_config = config.get("MachineLearning", {}).get("Models", {}).get(self.__class__.__name__, {})
         self.model_config = model_specific_config or {}
@@ -38,12 +40,11 @@ class DirectionClassificationModel(ModelBase):
         self.feature_stds = None
         self.class_distribution = None
         self.feature_columns = []
-        self.history = {} # Initialize history here
+        self.history = {}  # Initialize history here
         self.logger.info(f"Initialized {self.name} with config: {self.model_config}")
         tf.random.set_seed(self.model_config.get("seed", 42))
         np.random.seed(self.model_config.get("seed", 42))
         random.seed(self.model_config.get("seed", 42))
-
 
     def build(self, input_shape: tuple) -> None:
         """ Builds the Keras model architecture. (Implementation same as before) """
@@ -64,7 +65,7 @@ class DirectionClassificationModel(ModelBase):
                     kernel_regularizer=keras.regularizers.l2(l2_reg), name=f"dense_{i}"
                 )(x)
                 layer_x = keras.layers.BatchNormalization(name=f"bn_{i}")(layer_x)
-                layer_x = keras.layers.LeakyReLU(negative_slope=0.1, name=f"leaky_relu_{i}")(layer_x) # Fixed alpha
+                layer_x = keras.layers.LeakyReLU(negative_slope=0.1, name=f"leaky_relu_{i}")(layer_x)  # Fixed alpha
 
                 if prev_outputs and prev_outputs[-1].shape[-1] == units:
                     layer_x = keras.layers.Add(name=f"residual_{i}")([layer_x, prev_outputs[-1]])
@@ -75,20 +76,24 @@ class DirectionClassificationModel(ModelBase):
 
                 if i > 0 and i % 2 == 0 and i < len(n_hidden) - 1:
                     cross_units = max(16, units // 2)
-                    x = keras.layers.Dense(units=cross_units, kernel_initializer=keras.initializers.HeNormal(), name=f"cross_dense_{i}")(x)
-                    x = keras.layers.LeakyReLU(negative_slope=0.1, name=f"cross_relu_{i}")(x) # Fixed alpha
+                    x = keras.layers.Dense(units=cross_units, kernel_initializer=keras.initializers.HeNormal(),
+                                           name=f"cross_dense_{i}")(x)
+                    x = keras.layers.LeakyReLU(negative_slope=0.1, name=f"cross_relu_{i}")(x)  # Fixed alpha
 
             if self.is_multiclass and use_attention_config:
                 self.logger.debug("Adding Attention mechanism to the model.")
                 attention_dense_units = max(16, n_hidden[-1] // 2)
-                attention = keras.layers.Dense(units=attention_dense_units, activation='tanh', name="attention_dense")(x)
-                attention_weights = keras.layers.Dense(units=x.shape[-1], activation='sigmoid', name="attention_weights")(attention)
+                attention = keras.layers.Dense(units=attention_dense_units, activation='tanh', name="attention_dense")(
+                    x)
+                attention_weights = keras.layers.Dense(units=x.shape[-1], activation='sigmoid',
+                                                       name="attention_weights")(attention)
                 x = keras.layers.Multiply(name="attention_multiply")([x, attention_weights])
 
             pre_output_units = max(16, n_hidden[-1] // 2)
-            x = keras.layers.Dense(units=pre_output_units, kernel_regularizer=keras.regularizers.l2(l2_reg * 1.5), name="pre_output")(x)
+            x = keras.layers.Dense(units=pre_output_units, kernel_regularizer=keras.regularizers.l2(l2_reg * 1.5),
+                                   name="pre_output")(x)
             x = keras.layers.BatchNormalization(name="pre_output_bn")(x)
-            x = keras.layers.LeakyReLU(negative_slope=0.1, name="pre_output_relu")(x) # Fixed alpha
+            x = keras.layers.LeakyReLU(negative_slope=0.1, name="pre_output_relu")(x)  # Fixed alpha
 
             # --- Output Layer Definition (Activation only) ---
             if self.is_multiclass:
@@ -96,14 +101,14 @@ class DirectionClassificationModel(ModelBase):
                 outputs = keras.layers.Dense(n_classes, activation="softmax", name="direction_prediction")(x)
                 log_message = (f"Multiclass model build target (3 classes): {self.CLASS_DOWN}=DOWN(-1), "
                                f"{self.CLASS_NEUTRAL}=NEUTRAL(0), {self.CLASS_UP}=UP(1)")
-            else: # Binary classification
+            else:  # Binary classification
                 n_classes = 1
                 outputs = keras.layers.Dense(n_classes, activation="sigmoid", name="direction_prediction")(x)
                 log_message = f"Binary model build target: 0={self.CLASS_NAMES_BINARY[0]}(<=0), 1={self.CLASS_NAMES_BINARY[1]}(>0)"
 
             # --- Model Assembly Only (Compilation happens separately or after loading weights) ---
             model = keras.Model(inputs=inputs, outputs=outputs, name=self.name)
-            self.model = model # Assign the uncompiled model structure
+            self.model = model  # Assign the uncompiled model structure
 
             self.logger.info(f"Built model structure {self.name}.")
             self.logger.info(log_message)
@@ -161,7 +166,6 @@ class DirectionClassificationModel(ModelBase):
             self.logger.info(f"Binary label distribution: {class_distribution}")
             return y_processed
 
-
     @staticmethod
     @register_keras_serializable(package='Custom', name='FocalLoss')
     def focal_loss(gamma=2.0, alpha=0.25):
@@ -202,10 +206,10 @@ class DirectionClassificationModel(ModelBase):
         sparse_categorical_focal_loss.__name__ = f'focal_loss_g{gamma}_a{alpha_str}'
         return sparse_categorical_focal_loss
 
-
     def _create_lr_schedule(self, epochs):
         """ Creates a learning rate schedule with warmup and decay. (Implementation same as before) """
-        def lr_scheduler(epoch, lr): # Keras passes current lr
+
+        def lr_scheduler(epoch, lr):  # Keras passes current lr
             initial_lr = self.model_config.get("learning_rate", 0.001)
             max_lr = initial_lr * self.model_config.get("lr_schedule_max_factor", 5)
             min_lr = initial_lr / self.model_config.get("lr_schedule_min_factor", 10)
@@ -218,23 +222,24 @@ class DirectionClassificationModel(ModelBase):
             if epoch < warmup_epochs:
                 new_lr = min_lr + (initial_lr - min_lr) * (epoch / warmup_epochs)
             else:
-                 cycle_epoch = epoch - warmup_epochs
-                 cycle = np.floor(1 + cycle_epoch / (2 * step_size))
-                 x = abs(cycle_epoch / step_size - 2 * cycle + 1)
-                 new_lr = initial_lr + (max_lr - initial_lr) * max(0, (1 - x))
-                 if epoch > epochs * decay_start_ratio:
-                     decay_factor = decay_rate ** (epoch - epochs * decay_start_ratio)
-                     new_lr = max(min_lr, new_lr * decay_factor)
+                cycle_epoch = epoch - warmup_epochs
+                cycle = np.floor(1 + cycle_epoch / (2 * step_size))
+                x = abs(cycle_epoch / step_size - 2 * cycle + 1)
+                new_lr = initial_lr + (max_lr - initial_lr) * max(0, (1 - x))
+                if epoch > epochs * decay_start_ratio:
+                    decay_factor = decay_rate ** (epoch - epochs * decay_start_ratio)
+                    new_lr = max(min_lr, new_lr * decay_factor)
             return float(new_lr)
-        return lr_scheduler
 
+        return lr_scheduler
 
     # --- _create_balanced_dataset (Keep as it was in the full file example) ---
     def _create_balanced_dataset(self, X, y, batch_size=32):
         """ Creates a balanced TensorFlow dataset. (Implementation same as before) """
         if not self.is_multiclass:
-             self.logger.warning("Balanced dataset requested for binary; returning standard shuffled dataset.")
-             return tf.data.Dataset.from_tensor_slices((X, y)).shuffle(buffer_size=len(X)).batch(batch_size).prefetch(tf.data.AUTOTUNE)
+            self.logger.warning("Balanced dataset requested for binary; returning standard shuffled dataset.")
+            return tf.data.Dataset.from_tensor_slices((X, y)).shuffle(buffer_size=len(X)).batch(batch_size).prefetch(
+                tf.data.AUTOTUNE)
 
         num_classes = 3
         datasets_per_class = []
@@ -249,24 +254,25 @@ class DirectionClassificationModel(ModelBase):
                 continue
             class_X = X[class_indices]
             class_y = y[class_indices]
-            datasets_per_class.append(tf.data.Dataset.from_tensor_slices((class_X, class_y)).repeat().shuffle(buffer_size=max(1000, count)))
+            datasets_per_class.append(
+                tf.data.Dataset.from_tensor_slices((class_X, class_y)).repeat().shuffle(buffer_size=max(1000, count)))
 
         if not datasets_per_class:
-             self.logger.error("No data available for any class. Cannot create balanced dataset.")
-             return None
+            self.logger.error("No data available for any class. Cannot create balanced dataset.")
+            return None
 
         num_active_classes = len(datasets_per_class)
         sampling_weights = [1.0 / num_active_classes] * num_active_classes
 
         try:
-            balanced_ds = tf.data.Dataset.sample_from_datasets(datasets_per_class, weights=sampling_weights, stop_on_empty_dataset=False)
+            balanced_ds = tf.data.Dataset.sample_from_datasets(datasets_per_class, weights=sampling_weights,
+                                                               stop_on_empty_dataset=False)
             balanced_ds = balanced_ds.batch(batch_size).prefetch(tf.data.AUTOTUNE)
             self.logger.info(f"Created balanced dataset sampling from {num_active_classes} classes.")
             return balanced_ds
         except Exception as ds_err:
-             self.logger.error(f"Failed to create balanced dataset: {ds_err}", exc_info=True)
-             return None
-
+            self.logger.error(f"Failed to create balanced dataset: {ds_err}", exc_info=True)
+            return None
 
     # --- predict method (Keep as it was in the full file example) ---
     def predict(self, X: pd.DataFrame) -> np.ndarray:
@@ -275,7 +281,8 @@ class DirectionClassificationModel(ModelBase):
             self.logger.error(f"Cannot predict with {self.name}: Model not built or trained properly.")
             return np.array([])
         if not self.model.built:
-            self.logger.error(f"Cannot predict with {self.name}: Model structure exists but has not been built (run build() or train()).")
+            self.logger.error(
+                f"Cannot predict with {self.name}: Model structure exists but has not been built (run build() or train()).")
             return np.array([])
 
         self.logger.debug(f"Starting prediction for {X.shape[0]} samples.")
@@ -283,17 +290,17 @@ class DirectionClassificationModel(ModelBase):
             missing_cols = [col for col in self.feature_columns if col not in X.columns]
             if missing_cols: raise ValueError(f"Missing columns required for prediction: {missing_cols}")
             if X.shape[1] > len(self.feature_columns):
-                 extra_cols = [col for col in X.columns if col not in self.feature_columns]
-                 self.logger.warning(f"Input data has extra columns: {extra_cols}. Ignoring them.")
+                extra_cols = [col for col in X.columns if col not in self.feature_columns]
+                self.logger.warning(f"Input data has extra columns: {extra_cols}. Ignoring them.")
 
             X_pred_np = X[self.feature_columns].values.astype(np.float32)
 
             if self.feature_means is not None and self.feature_stds is not None:
-                 safe_stds = np.where(self.feature_stds == 0, 1.0, self.feature_stds)
-                 X_pred_scaled = (X_pred_np - self.feature_means) / safe_stds
+                safe_stds = np.where(self.feature_stds == 0, 1.0, self.feature_stds)
+                X_pred_scaled = (X_pred_np - self.feature_means) / safe_stds
             else:
-                 self.logger.warning("Scaler parameters not found. Using scaler object transform.")
-                 X_pred_scaled = self.scaler.transform(X_pred_np)
+                self.logger.warning("Scaler parameters not found. Using scaler object transform.")
+                X_pred_scaled = self.scaler.transform(X_pred_np)
 
             raw_preds = self.model.predict(X_pred_scaled)
 
@@ -309,8 +316,6 @@ class DirectionClassificationModel(ModelBase):
         except Exception as e:
             self.logger.error(f"Prediction failed for {self.name}: {e}", exc_info=True)
             return np.array([])
-
-
 
     def train(self, X: pd.DataFrame, y: pd.DataFrame, validation_data=None) -> dict:
         self.logger.info(f"Starting training for {self.name}")
@@ -562,8 +567,6 @@ class DirectionClassificationModel(ModelBase):
             self.logger.error(f"Training failed: {e}", exc_info=True)
             return {"error": f"Training failed: {str(e)}"}
 
-
-
     def evaluate(self, X: pd.DataFrame, y: pd.DataFrame) -> dict:
         """
         Provides comprehensive evaluation metrics. Ensures data shapes are correct.
@@ -572,13 +575,12 @@ class DirectionClassificationModel(ModelBase):
             self.logger.error(f"Cannot evaluate {self.name}: Model not built or trained properly.")
             return {"error": "Model not ready for evaluation."}
         if not self.model.built:
-             self.logger.error(f"Cannot evaluate {self.name}: Model structure exists but is not built.")
-             return {"error": "Model not built."}
+            self.logger.error(f"Cannot evaluate {self.name}: Model structure exists but is not built.")
+            return {"error": "Model not built."}
         # Check if the model is compiled (necessary for evaluate)
         if getattr(self.model, "optimizer", None) is None:
             self.logger.error(f"Cannot evaluate {self.name}: Model is not compiled.")
             return {"error": "Model not compiled."}
-
 
         self.logger.info(f"--- Starting Evaluation for {self.name} ---")
         results = {}
@@ -600,7 +602,8 @@ class DirectionClassificationModel(ModelBase):
             y_true_mapped = self.prepare_direction_data(y)
             if y_true_mapped.ndim > 1: y_true_mapped = y_true_mapped.squeeze()
             if y_true_mapped.size != X_eval_scaled.shape[0]:
-                 raise ValueError(f"Shape mismatch between features ({X_eval_scaled.shape[0]}) and labels ({y_true_mapped.size}) after prep.")
+                raise ValueError(
+                    f"Shape mismatch between features ({X_eval_scaled.shape[0]}) and labels ({y_true_mapped.size}) after prep.")
             if y_true_mapped.size == 0: raise ValueError("Prepared true labels are empty.")
             self.logger.debug(f"Prepared evaluation labels shape: {y_true_mapped.shape}")
 
@@ -609,19 +612,17 @@ class DirectionClassificationModel(ModelBase):
             y_pred_probs = self.model.predict(X_eval_scaled)
             self.logger.debug("Predictions generated.")
 
-
             # --- Keras Compiled Metrics ---
             self.logger.debug("Calculating Keras base metrics...")
             try:
-                 # Ensure y_true_mapped is 1D as expected by sparse/binary metrics usually
-                 keras_metrics = self.model.evaluate(X_eval_scaled, y_true_mapped, verbose=0)
-                 keras_metrics_dict = dict(zip(self.model.metrics_names, keras_metrics))
-                 results["keras_metrics"] = {k: float(v) for k, v in keras_metrics_dict.items()}
-                 self.logger.info(f"Keras Base Metrics: {results['keras_metrics']}")
+                # Ensure y_true_mapped is 1D as expected by sparse/binary metrics usually
+                keras_metrics = self.model.evaluate(X_eval_scaled, y_true_mapped, verbose=0)
+                keras_metrics_dict = dict(zip(self.model.metrics_names, keras_metrics))
+                results["keras_metrics"] = {k: float(v) for k, v in keras_metrics_dict.items()}
+                self.logger.info(f"Keras Base Metrics: {results['keras_metrics']}")
             except Exception as keras_eval_err:
-                 self.logger.error(f"Keras model.evaluate() failed: {keras_eval_err}", exc_info=True)
-                 results["keras_metrics"] = {"error": str(keras_eval_err)}
-
+                self.logger.error(f"Keras model.evaluate() failed: {keras_eval_err}", exc_info=True)
+                results["keras_metrics"] = {"error": str(keras_eval_err)}
 
             # --- Detailed Scikit-learn Metrics ---
             self.logger.debug("Calculating detailed classification metrics...")
@@ -629,74 +630,81 @@ class DirectionClassificationModel(ModelBase):
             y_pred_probs_clipped = np.clip(y_pred_probs, eps, 1 - eps)
 
             if self.is_multiclass:
-                 n_classes = 3
-                 class_names = self.CLASS_NAMES_MULTI
-                 labels = [self.CLASS_DOWN, self.CLASS_NEUTRAL, self.CLASS_UP]
-                 y_pred_mapped = np.argmax(y_pred_probs, axis=1) # Shape: (n_samples,)
+                n_classes = 3
+                class_names = self.CLASS_NAMES_MULTI
+                labels = [self.CLASS_DOWN, self.CLASS_NEUTRAL, self.CLASS_UP]
+                y_pred_mapped = np.argmax(y_pred_probs, axis=1)  # Shape: (n_samples,)
 
-                 results['log_loss'] = float(log_loss(y_true_mapped, y_pred_probs_clipped, labels=labels))
-                 cm = confusion_matrix(y_true_mapped, y_pred_mapped, labels=labels)
-                 report_dict = classification_report(y_true_mapped, y_pred_mapped, labels=labels, target_names=class_names, output_dict=True, zero_division=0)
-                 report_str = classification_report(y_true_mapped, y_pred_mapped, labels=labels, target_names=class_names, zero_division=0)
-                 results['mcc'] = float(matthews_corrcoef(y_true_mapped, y_pred_mapped))
-                 results['cohen_kappa'] = float(cohen_kappa_score(y_true_mapped, y_pred_mapped, labels=labels))
-                 results['balanced_accuracy'] = float(balanced_accuracy_score(y_true_mapped, y_pred_mapped))
-                 results['overall_accuracy'] = float(accuracy_score(y_true_mapped, y_pred_mapped))
-                 results['confusion_matrix'] = cm.tolist()
-                 results['classification_report'] = report_dict
-                 # ... (logging for multiclass results - same as before) ...
-                 self.logger.info(f"Log Loss: {results['log_loss']:.4f}")
-                 self.logger.info(f"Confusion Matrix (Rows: True, Cols: Pred):\nLabels: {class_names}\n{cm}")
-                 self.logger.info(f"Classification Report:\n{report_str}")
-                 self.logger.info(f"MCC: {results['mcc']:.4f}, Kappa: {results['cohen_kappa']:.4f}, Balanced Acc: {results['balanced_accuracy']:.4f}, Overall Acc: {results['overall_accuracy']:.4f}")
+                results['log_loss'] = float(log_loss(y_true_mapped, y_pred_probs_clipped, labels=labels))
+                cm = confusion_matrix(y_true_mapped, y_pred_mapped, labels=labels)
+                report_dict = classification_report(y_true_mapped, y_pred_mapped, labels=labels,
+                                                    target_names=class_names, output_dict=True, zero_division=0)
+                report_str = classification_report(y_true_mapped, y_pred_mapped, labels=labels,
+                                                   target_names=class_names, zero_division=0)
+                results['mcc'] = float(matthews_corrcoef(y_true_mapped, y_pred_mapped))
+                results['cohen_kappa'] = float(cohen_kappa_score(y_true_mapped, y_pred_mapped, labels=labels))
+                results['balanced_accuracy'] = float(balanced_accuracy_score(y_true_mapped, y_pred_mapped))
+                results['overall_accuracy'] = float(accuracy_score(y_true_mapped, y_pred_mapped))
+                results['confusion_matrix'] = cm.tolist()
+                results['classification_report'] = report_dict
+                # ... (logging for multiclass results - same as before) ...
+                self.logger.info(f"Log Loss: {results['log_loss']:.4f}")
+                self.logger.info(f"Confusion Matrix (Rows: True, Cols: Pred):\nLabels: {class_names}\n{cm}")
+                self.logger.info(f"Classification Report:\n{report_str}")
+                self.logger.info(
+                    f"MCC: {results['mcc']:.4f}, Kappa: {results['cohen_kappa']:.4f}, Balanced Acc: {results['balanced_accuracy']:.4f}, Overall Acc: {results['overall_accuracy']:.4f}")
 
+                # --- Multiclass AUC ---
+                try:
+                    y_true_binarized = label_binarize(y_true_mapped, classes=labels)
+                    if y_true_binarized.shape[1] > 1 and y_true_binarized.shape[1] == y_pred_probs_clipped.shape[1]:
+                        auc_ovr_weighted = roc_auc_score(y_true_binarized, y_pred_probs_clipped, average='weighted',
+                                                         multi_class='ovr')
+                        results['auc_weighted_ovr'] = float(auc_ovr_weighted)
+                        self.logger.info(f"AUC (Weighted One-vs-Rest): {results['auc_weighted_ovr']:.4f}")
+                    else:
+                        self.logger.warning(
+                            f"Skipping Multiclass AUC: Not enough classes in true labels ({y_true_binarized.shape[1]}) or mismatch with predictions ({y_pred_probs_clipped.shape[1]}).")
+                        results['auc_weighted_ovr'] = None
+                except Exception as auc_err:
+                    self.logger.warning(f"Could not calculate Multiclass AUC: {auc_err}",
+                                        exc_info=False)  # Less verbose exc_info
+                    results['auc_weighted_ovr'] = None
 
-                 # --- Multiclass AUC ---
-                 try:
-                     y_true_binarized = label_binarize(y_true_mapped, classes=labels)
-                     if y_true_binarized.shape[1] > 1 and y_true_binarized.shape[1] == y_pred_probs_clipped.shape[1] :
-                          auc_ovr_weighted = roc_auc_score(y_true_binarized, y_pred_probs_clipped, average='weighted', multi_class='ovr')
-                          results['auc_weighted_ovr'] = float(auc_ovr_weighted)
-                          self.logger.info(f"AUC (Weighted One-vs-Rest): {results['auc_weighted_ovr']:.4f}")
-                     else:
-                          self.logger.warning(f"Skipping Multiclass AUC: Not enough classes in true labels ({y_true_binarized.shape[1]}) or mismatch with predictions ({y_pred_probs_clipped.shape[1]}).")
-                          results['auc_weighted_ovr'] = None
-                 except Exception as auc_err:
-                     self.logger.warning(f"Could not calculate Multiclass AUC: {auc_err}", exc_info=False) # Less verbose exc_info
-                     results['auc_weighted_ovr'] = None
+            else:  # Binary classification
+                class_names = self.CLASS_NAMES_BINARY
+                labels = [0, 1]
+                # Ensure probs are 1D: (n_samples,)
+                y_pred_probs_binary = y_pred_probs_clipped.squeeze(axis=-1)
+                if y_pred_probs_binary.ndim == 0 and y_true_mapped.ndim == 0 and y_true_mapped.size == 1:  # Handle single prediction case
+                    y_pred_probs_binary = np.array([y_pred_probs_binary])
+                    y_true_mapped = np.array([y_true_mapped])  # Ensure they are arrays for sklearn funcs
+                elif y_pred_probs_binary.ndim != 1:
+                    raise ValueError(f"Binary probabilities have unexpected shape: {y_pred_probs.shape}")
 
-            else: # Binary classification
-                 class_names = self.CLASS_NAMES_BINARY
-                 labels = [0, 1]
-                 # Ensure probs are 1D: (n_samples,)
-                 y_pred_probs_binary = y_pred_probs_clipped.squeeze(axis=-1)
-                 if y_pred_probs_binary.ndim == 0 and y_true_mapped.ndim == 0 and y_true_mapped.size == 1: # Handle single prediction case
-                       y_pred_probs_binary = np.array([y_pred_probs_binary])
-                       y_true_mapped = np.array([y_true_mapped]) # Ensure they are arrays for sklearn funcs
-                 elif y_pred_probs_binary.ndim != 1:
-                       raise ValueError(f"Binary probabilities have unexpected shape: {y_pred_probs.shape}")
+                y_pred_mapped = (y_pred_probs_binary > 0.5).astype(int)  # Shape: (n_samples,)
 
-                 y_pred_mapped = (y_pred_probs_binary > 0.5).astype(int) # Shape: (n_samples,)
+                results['log_loss'] = float(log_loss(y_true_mapped, y_pred_probs_binary, labels=labels))
+                cm = confusion_matrix(y_true_mapped, y_pred_mapped, labels=labels)
+                report_dict = classification_report(y_true_mapped, y_pred_mapped, labels=labels,
+                                                    target_names=class_names, output_dict=True, zero_division=0)
+                report_str = classification_report(y_true_mapped, y_pred_mapped, labels=labels,
+                                                   target_names=class_names, zero_division=0)
+                results['mcc'] = float(matthews_corrcoef(y_true_mapped, y_pred_mapped))
+                results['cohen_kappa'] = float(cohen_kappa_score(y_true_mapped, y_pred_mapped, labels=labels))
+                results['balanced_accuracy'] = float(balanced_accuracy_score(y_true_mapped, y_pred_mapped))
+                results['overall_accuracy'] = float(accuracy_score(y_true_mapped, y_pred_mapped))
+                results['confusion_matrix'] = cm.tolist()
+                results['classification_report'] = report_dict
+                # ... (logging for binary results - same as before) ...
+                self.logger.info(f"Log Loss: {results['log_loss']:.4f}")
+                self.logger.info(f"Confusion Matrix (Rows: True, Cols: Pred):\nLabels: {class_names}\n{cm}")
+                self.logger.info(f"Classification Report:\n{report_str}")
+                self.logger.info(
+                    f"MCC: {results['mcc']:.4f}, Kappa: {results['cohen_kappa']:.4f}, Balanced Acc: {results['balanced_accuracy']:.4f}, Overall Acc: {results['overall_accuracy']:.4f}")
 
-                 results['log_loss'] = float(log_loss(y_true_mapped, y_pred_probs_binary, labels=labels))
-                 cm = confusion_matrix(y_true_mapped, y_pred_mapped, labels=labels)
-                 report_dict = classification_report(y_true_mapped, y_pred_mapped, labels=labels, target_names=class_names, output_dict=True, zero_division=0)
-                 report_str = classification_report(y_true_mapped, y_pred_mapped, labels=labels, target_names=class_names, zero_division=0)
-                 results['mcc'] = float(matthews_corrcoef(y_true_mapped, y_pred_mapped))
-                 results['cohen_kappa'] = float(cohen_kappa_score(y_true_mapped, y_pred_mapped, labels=labels))
-                 results['balanced_accuracy'] = float(balanced_accuracy_score(y_true_mapped, y_pred_mapped))
-                 results['overall_accuracy'] = float(accuracy_score(y_true_mapped, y_pred_mapped))
-                 results['confusion_matrix'] = cm.tolist()
-                 results['classification_report'] = report_dict
-                 # ... (logging for binary results - same as before) ...
-                 self.logger.info(f"Log Loss: {results['log_loss']:.4f}")
-                 self.logger.info(f"Confusion Matrix (Rows: True, Cols: Pred):\nLabels: {class_names}\n{cm}")
-                 self.logger.info(f"Classification Report:\n{report_str}")
-                 self.logger.info(f"MCC: {results['mcc']:.4f}, Kappa: {results['cohen_kappa']:.4f}, Balanced Acc: {results['balanced_accuracy']:.4f}, Overall Acc: {results['overall_accuracy']:.4f}")
-
-
-                 # --- Binary AUC ---
-                 try:
+                # --- Binary AUC ---
+                try:
                     if len(np.unique(y_true_mapped)) > 1:
                         auc_score = roc_auc_score(y_true_mapped, y_pred_probs_binary)
                         results['auc'] = float(auc_score)
@@ -707,7 +715,7 @@ class DirectionClassificationModel(ModelBase):
                     else:
                         self.logger.warning("Skipping Binary AUC: Only one class present in true labels.")
                         results['auc'] = None
-                 except Exception as auc_err:
+                except Exception as auc_err:
                     self.logger.warning(f"Could not calculate Binary AUC: {auc_err}", exc_info=False)
                     results['auc'] = None
 
@@ -717,7 +725,6 @@ class DirectionClassificationModel(ModelBase):
         except Exception as e:
             self.logger.error(f"Failed during evaluation of model {self.name}: {e}", exc_info=True)
             return {"error": f"Evaluation failed: {e}"}
-
 
     def save(self, path: str) -> bool:
         """
@@ -755,7 +762,7 @@ class DirectionClassificationModel(ModelBase):
                 # Store input shape HINT used for build (e.g., number of features)
                 "input_shape_hint": self.model.input_shape[1:] if hasattr(self.model,
                                                                           'input_shape') and self.model.input_shape else (
-                len(self.feature_columns),) if self.feature_columns else None,
+                    len(self.feature_columns),) if self.feature_columns else None,
                 "scaler_means": self.feature_means.tolist() if self.feature_means is not None else None,
                 "scaler_stds": self.feature_stds.tolist() if self.feature_stds is not None else None,
                 "class_distribution_train": self.class_distribution,
@@ -774,13 +781,12 @@ class DirectionClassificationModel(ModelBase):
             self.logger.error(f"Failed to save model weights/metadata for {self.name} to {path}: {e}", exc_info=True)
             return False
 
-    @classmethod
-    def load(cls, path: str, config: dict, logger: logging.Logger) -> 'DirectionClassificationModel':
+    def load(self, path: str) -> bool:
         """
         Loads a model by rebuilding architecture, loading weights, and compiling.
         Relies on metadata saved alongside weights.
         """
-        logger.info(f"--- Loading Model (Rebuild+Weights) from: {path} ---")
+        self.logger.info(f"--- Loading Model (Rebuild+Weights) from: {path} ---")
         try:
             # 1. Find and load metadata
             metadata_path = None
@@ -790,7 +796,7 @@ class DirectionClassificationModel(ModelBase):
             direct_metadata_path = f"{path}{expected_metadata_suffix}"
             if os.path.exists(direct_metadata_path):
                 metadata_path = direct_metadata_path
-                logger.info(f"Found metadata file: {metadata_path}")
+                self.logger.info(f"Found metadata file: {metadata_path}")
             else:
                 # Check directory for metadata file matching pattern
                 base_dir = os.path.dirname(path)
@@ -799,7 +805,7 @@ class DirectionClassificationModel(ModelBase):
                 for fname in os.listdir(base_dir):
                     if fname.startswith(base_name) and fname.endswith(expected_metadata_suffix):
                         metadata_path = os.path.join(base_dir, fname)
-                        logger.info(f"Found metadata file: {metadata_path}")
+                        self.logger.info(f"Found metadata file: {metadata_path}")
                         break
 
             if not metadata_path:
@@ -807,57 +813,51 @@ class DirectionClassificationModel(ModelBase):
 
             with open(metadata_path, 'r') as f:
                 metadata = json.load(f)
-            logger.info("Metadata loaded successfully.")
+            self.logger.info("Metadata loaded successfully.")
 
-            # --- Instantiate the class ---
+            # --- Update instance state ---
             model_name = metadata.get("name", "loaded_model")
-            # Use the original config potentially updated with saved build config
-            # This allows loading architecture independent of current run's config
-            instance_config = config  # Start with current config
+            self.name = model_name
+
+            # Update model config with saved build config
             saved_model_config = metadata.get("model_config_build")
             if saved_model_config:
-                # Need a deep merge strategy if only partially overriding
-                logger.info("Using saved model config for build parameters.")
-                # Simple override for now:
-                instance_config['TrainingSettings'] = instance_config.get('TrainingSettings', {})
-                instance_config['TrainingSettings']['ModelConfig'] = instance_config['TrainingSettings'].get(
-                    'ModelConfig', {})
-                instance_config['TrainingSettings']['ModelConfig'][cls.__name__] = saved_model_config
-
-            instance = cls(config=instance_config, logger=logger, name=model_name)
+                self.logger.info("Using saved model config for build parameters.")
+                self.model_config.update(saved_model_config)
 
             # Restore state from metadata BEFORE building
-            instance.is_multiclass = metadata.get("is_multiclass")
-            if instance.is_multiclass is None:
-                logger.warning("Metadata missing 'is_multiclass' flag, defaulting to True")
-                instance.is_multiclass = True
+            self.is_multiclass = metadata.get("is_multiclass")
+            if self.is_multiclass is None:
+                self.logger.warning("Metadata missing 'is_multiclass' flag, defaulting to True")
+                self.is_multiclass = True
 
-            instance.feature_columns = metadata.get("feature_columns", [])
+            self.feature_columns = metadata.get("feature_columns", [])
             input_shape_hint = metadata.get("input_shape_hint")
-            if not instance.feature_columns and not input_shape_hint:
+            if not self.feature_columns and not input_shape_hint:
                 raise ValueError("Metadata lacks feature_columns and input_shape_hint; cannot determine input shape.")
-            if not input_shape_hint: input_shape_hint = (len(instance.feature_columns),)
+            if not input_shape_hint:
+                input_shape_hint = (len(self.feature_columns),)
 
             # Restore scaler
             means = metadata.get("scaler_means")
             stds = metadata.get("scaler_stds")
             if means is not None and stds is not None:
-                instance.feature_means = np.array(means)
-                instance.feature_stds = np.array(stds)
-                instance.scaler = StandardScaler()
-                instance.scaler.mean_ = instance.feature_means
-                instance.scaler.scale_ = instance.feature_stds
-                if instance.feature_columns:
-                    instance.scaler.n_features_in_ = len(instance.feature_columns)
-                logger.info("StandardScaler parameters restored.")
+                self.feature_means = np.array(means)
+                self.feature_stds = np.array(stds)
+                self.scaler = StandardScaler()
+                self.scaler.mean_ = self.feature_means
+                self.scaler.scale_ = self.feature_stds
+                if self.feature_columns:
+                    self.scaler.n_features_in_ = len(self.feature_columns)
+                self.logger.info("StandardScaler parameters restored.")
             else:
-                logger.warning("Scaler parameters not found in metadata.")
-                instance.scaler = StandardScaler()
+                self.logger.warning("Scaler parameters not found in metadata.")
+                self.scaler = StandardScaler()
 
             # --- 2. Rebuild Model Architecture ---
-            logger.info(f"Rebuilding model structure with input shape hint: {input_shape_hint}")
-            instance.build(input_shape=input_shape_hint)
-            if instance.model is None:
+            self.logger.info(f"Rebuilding model structure with input shape hint: {input_shape_hint}")
+            self.build(input_shape=input_shape_hint)
+            if self.model is None:
                 raise RuntimeError("Model build failed during load.")
 
             # --- 3. Load Weights ---
@@ -869,7 +869,7 @@ class DirectionClassificationModel(ModelBase):
                 # Try exact path from metadata
                 weights_path = os.path.join(os.path.dirname(path), weights_filename)
                 if not os.path.exists(weights_path):
-                    logger.warning(f"Weights file not found at path from metadata: {weights_path}")
+                    self.logger.warning(f"Weights file not found at path from metadata: {weights_path}")
                     weights_path = None
 
             # If weights path from metadata doesn't exist, try common patterns
@@ -887,7 +887,7 @@ class DirectionClassificationModel(ModelBase):
                 for wp in weight_patterns:
                     if os.path.exists(wp):
                         weights_path = wp
-                        logger.info(f"Found weights at: {weights_path}")
+                        self.logger.info(f"Found weights at: {weights_path}")
                         break
 
             if not weights_path:
@@ -899,45 +899,42 @@ class DirectionClassificationModel(ModelBase):
                     if fname.startswith(base_name) and "weights" in fname.lower() and (
                             fname.endswith(".h5") or fname.endswith(".keras")):
                         weights_path = os.path.join(base_dir, fname)
-                        logger.info(f"Found weights via directory search: {weights_path}")
+                        self.logger.info(f"Found weights via directory search: {weights_path}")
                         break
 
             if not weights_path:
                 raise FileNotFoundError(f"No weights file found for {path}")
 
-            instance.model.load_weights(weights_path)
-            logger.info(f"Model weights loaded successfully from {weights_path}")
+            self.model.load_weights(weights_path)
+            self.logger.info(f"Model weights loaded successfully from {weights_path}")
 
             # --- 4. Compile Model ---
-            logger.info("Compiling loaded model...")
+            self.logger.info("Compiling loaded model...")
             # Determine loss and metrics based on loaded state (is_multiclass)
-            # Note: Focal loss alpha cannot be restored dynamically here, compile with standard loss
-            # Or retrieve alpha from metadata if stored during save (more complex)
             compile_loss = None
             compile_metrics = []
-            if instance.is_multiclass:
-                # Cannot reliably restore dynamic focal loss alpha without saving it. Use standard.
+            if self.is_multiclass:
                 compile_loss = "sparse_categorical_crossentropy"
                 compile_metrics = [keras.metrics.SparseCategoricalAccuracy(name="accuracy")]
-                logger.warning(
-                    "Compiling loaded multiclass model with standard SparseCategoricalCrossentropy (Focal Loss alpha state not saved).")
+                self.logger.warning(
+                    "Compiling loaded multiclass model with standard SparseCategoricalCrossentropy.")
             else:
                 compile_loss = "binary_crossentropy"
                 compile_metrics = [keras.metrics.BinaryAccuracy(name="accuracy"), keras.metrics.AUC(name="auc")]
 
             # Use a base learning rate, scheduler is not restored here
-            compile_lr = instance.model_config.get("learning_rate", 0.001)
+            compile_lr = self.model_config.get("learning_rate", 0.001)
             optimizer = keras.optimizers.Adam(learning_rate=compile_lr)
 
-            instance.model.compile(optimizer=optimizer, loss=compile_loss, metrics=compile_metrics)
-            logger.info("Loaded model compiled successfully.")
+            self.model.compile(optimizer=optimizer, loss=compile_loss, metrics=compile_metrics)
+            self.logger.info("Loaded model compiled successfully.")
 
-            logger.info(f"--- Model '{instance.name}' Loaded Successfully (Rebuild+Weights) ---")
-            return instance
+            self.logger.info(f"--- Model '{self.name}' Loaded Successfully (Rebuild+Weights) ---")
+            return True
 
         except FileNotFoundError as fnf_err:
-            logger.error(f"Failed to load model from {path}: {fnf_err}")
-            raise fnf_err
+            self.logger.error(f"Failed to load model from {path}: {fnf_err}")
+            return False
         except Exception as e:
-            logger.error(f"Failed to load model from {path}: {e}", exc_info=True)
-            raise Exception(f"Failed to load model from {path}: {e}")
+            self.logger.error(f"Failed to load model from {path}: {e}", exc_info=True)
+            return False
