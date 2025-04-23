@@ -1,6 +1,7 @@
 from dependency_injector import containers, providers
 from Utilities.ConfigurationUtils import Config
 from Utilities.LoggingUtils import Logger
+from Utilities.ErrorHandler import ErrorHandler
 from Processing.ProcessorFactory import ProcessorFactory
 from Fetching.FetcherFactory import FetcherFactory
 from Utilities.PathResolver import PathResolver
@@ -25,24 +26,36 @@ class Container(containers.DeclarativeContainer):
         )
     )
 
+    # Error handler
+    error_handler = providers.Singleton(
+        ErrorHandler,
+        logger=providers.Callable(
+            lambda l: l.get(),
+            l=logger
+        )
+    )
+
     # Path resolver
     path_resolver = providers.Singleton(
         PathResolver,
-        config=config
+        config=config,
+        error_handler=error_handler
     )
 
     # Fetcher factory
     fetcher_factory = providers.Singleton(
         FetcherFactory,
         config=config,
-        logger=logger
+        logger=logger,
+        error_handler=error_handler
     )
 
     # Data processor factory
     processor_factory = providers.Singleton(
         ProcessorFactory,
         config=config,
-        logger=logger
+        logger=logger,
+        error_handler=error_handler
     )
 
     # Feature service

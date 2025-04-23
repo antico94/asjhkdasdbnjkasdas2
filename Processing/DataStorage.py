@@ -1,48 +1,99 @@
-from typing import Tuple
+from typing import Tuple, Dict, Any, Optional
 
 import pandas as pd
 from sqlalchemy import create_engine, text
 
 from Utilities.ConfigurationUtils import Config
 from Utilities.LoggingUtils import Logger
+from Utilities.ErrorHandler import ErrorHandler, ErrorSeverity
 
 
 class DataStorage:
-    def __init__(self, config: Config, logger: Logger):
+    def __init__(self, config: Config, logger: Logger, error_handler: ErrorHandler):
         self.config = config
         self.logger = logger
+        self.error_handler = error_handler
         self.db_config = config.get('Database', {})
         self.engine = self._create_engine()
 
+    @property
+    def error_context(self) -> Dict[str, Any]:
+        """Base context for error handling in this class"""
+        return {
+            "class": self.__class__.__name__,
+            "db_host": self.db_config.get('Host', 'unknown'),
+            "db_name": self.db_config.get('Database', 'unknown')
+        }
+
     def _create_engine(self):
         """Create SQLAlchemy engine for database connections."""
-        db = self.db_config
-        connection_string = (
-            f"mssql+pyodbc://{db['User']}:{db['Password']}@{db['Host']},{db['Port']}/"
-            f"{db['Database']}?driver=ODBC+Driver+17+for+SQL+Server"
-        )
-        return create_engine(connection_string)
+        context = {
+            **self.error_context,
+            "operation": "_create_engine"
+        }
+
+        try:
+            db = self.db_config
+            connection_string = (
+                f"mssql+pyodbc://{db['User']}:{db['Password']}@{db['Host']},{db['Port']}/"
+                f"{db['Database']}?driver=ODBC+Driver+17+for+SQL+Server"
+            )
+            return create_engine(connection_string)
+        except Exception as e:
+            self.error_handler.handle_error(
+                exception=e,
+                context=context,
+                severity=ErrorSeverity.FATAL,
+                reraise=True
+            )
+            raise
 
     def save_processed_data(self, X: pd.DataFrame, y: pd.DataFrame,
                             pair: str, timeframe: str, dataset_type: str) -> bool:
         """Save processed data to database tables with indicators and features."""
+        context = {
+            **self.error_context,
+            "operation": "save_processed_data",
+            "pair": pair,
+            "timeframe": timeframe,
+            "dataset_type": dataset_type,
+            "X_shape": str(X.shape) if X is not None else "None",
+            "y_shape": str(y.shape) if y is not None else "None"
+        }
+
         try:
             # Ensure we have data to save
             if X.empty:
-                self.logger.warning(f"No data to save for {pair}_{timeframe}_{dataset_type}")
+                self.error_handler.handle_error(
+                    ValueError(f"No data to save for {pair}_{timeframe}_{dataset_type}"),
+                    context,
+                    ErrorSeverity.MEDIUM,
+                    reraise=False
+                )
                 return False
 
             # Verify time column exists and has no NaN values
             if 'time' not in X.columns:
-                self.logger.error("Time column missing from features dataframe")
+                self.error_handler.handle_error(
+                    ValueError("Time column missing from features dataframe"),
+                    context,
+                    ErrorSeverity.MEDIUM,
+                    reraise=False
+                )
                 return False
 
             if X['time'].isna().any():
-                self.logger.error("Time column contains NaN values")
+                self.error_handler.handle_error(
+                    ValueError("Time column contains NaN values"),
+                    context,
+                    ErrorSeverity.MEDIUM,
+                    reraise=False
+                )
                 return False
 
             # Create table name for the processed data
             table_name = f"{pair}_{timeframe}_{dataset_type}_processed"
+            context["table_name"] = table_name
 
             self.logger.info(f"Saving processed data to {table_name}")
 
@@ -65,38 +116,83 @@ class DataStorage:
             return True
 
         except Exception as e:
-            self.logger.error(f"Failed to save processed data: {e}")
+            self.error_handler.handle_error(
+                exception=e,
+                context=context,
+                severity=ErrorSeverity.HIGH,
+                reraise=False
+            )
             return False
 
     def _create_processed_table(self, table_name: str) -> None:
         """Create a table for processed data with features and targets."""
-        # Drop existing table if it exists
-        with self.engine.connect() as conn:
-            conn.execute(text(f"DROP TABLE IF EXISTS {table_name}"))
-            conn.commit()
+        context = {
+            **self.error_context,
+            "operation": "_create_processed_table",
+            "table_name": table_name
+        }
+
+        try:
+            # Drop existing table if it exists
+            with self.engine.connect() as conn:
+                conn.execute(text(f"DROP TABLE IF EXISTS {table_name}"))
+                conn.commit()
+        except Exception as e:
+            self.error_handler.handle_error(
+                exception=e,
+                context=context,
+                severity=ErrorSeverity.MEDIUM,
+                reraise=True
+            )
+            raise
 
     def _prepare_combined_dataframe(self, X: pd.DataFrame, y: pd.DataFrame) -> pd.DataFrame:
         """Prepare a combined DataFrame with features and targets."""
-        # Start with a copy of X
-        combined_df = X.copy()
+        context = {
+            **self.error_context,
+            "operation": "_prepare_combined_dataframe",
+            "X_shape": str(X.shape),
+            "y_shape": str(y.shape) if y is not None else "None"
+        }
 
-        # Rename feature columns (except time)
-        for col in combined_df.columns:
-            if col != 'time':
-                combined_df = combined_df.rename(columns={col: f'feature_{col}'})
+        try:
+            # Start with a copy of X
+            combined_df = X.copy()
 
-        # Add target columns if y is not empty
-        if not y.empty:
-            for col in y.columns:
-                combined_df[f'target_{col}'] = y[col].values
+            # Rename feature columns (except time)
+            for col in combined_df.columns:
+                if col != 'time':
+                    combined_df = combined_df.rename(columns={col: f'feature_{col}'})
 
-        return combined_df
+            # Add target columns if y is not empty
+            if not y.empty:
+                for col in y.columns:
+                    combined_df[f'target_{col}'] = y[col].values
+
+            return combined_df
+        except Exception as e:
+            self.error_handler.handle_error(
+                exception=e,
+                context=context,
+                severity=ErrorSeverity.HIGH,
+                reraise=True
+            )
+            raise
 
     def load_processed_data(self, pair: str, timeframe: str, dataset_type: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """Load processed data from database."""
+        context = {
+            **self.error_context,
+            "operation": "load_processed_data",
+            "pair": pair,
+            "timeframe": timeframe,
+            "dataset_type": dataset_type
+        }
+
         try:
             # Create table name
             table_name = f"{pair}_{timeframe}_{dataset_type}_processed"
+            context["table_name"] = table_name
 
             # Query to get all data
             query = f"SELECT * FROM {table_name}"
@@ -130,5 +226,10 @@ class DataStorage:
             return X, y
 
         except Exception as e:
-            self.logger.error(f"Failed to load processed data: {e}")
+            self.error_handler.handle_error(
+                exception=e,
+                context=context,
+                severity=ErrorSeverity.HIGH,
+                reraise=False
+            )
             return pd.DataFrame(), pd.DataFrame()

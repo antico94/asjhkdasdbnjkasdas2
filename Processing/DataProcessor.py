@@ -1,17 +1,19 @@
 import pandas as pd
 import numpy as np
 from sqlalchemy import create_engine
-from typing import Tuple
+from typing import Tuple, Dict, Any, Optional
 
 from Utilities.ConfigurationUtils import Config
 from Utilities.LoggingUtils import Logger
+from Utilities.ErrorHandler import ErrorHandler, ErrorSeverity
 from Processing.TechnicalIndicators import TechnicalIndicators
 
 
 class DataProcessor:
-    def __init__(self, config: Config, logger: Logger):
+    def __init__(self, config: Config, logger: Logger, error_handler: ErrorHandler):
         self.config = config
         self.logger = logger
+        self.error_handler = error_handler
 
         # Get GoldTradingSettings from config
         self.gold_settings = config.get('GoldTradingSettings', {})
@@ -19,6 +21,12 @@ class DataProcessor:
         # Log if GoldTradingSettings is missing or empty
         if not self.gold_settings:
             self.logger.warning("GoldTradingSettings is missing or empty in config. Using default values.")
+            self.error_handler.handle_error(
+                ValueError("GoldTradingSettings is missing or empty in config"),
+                {"class": self.__class__.__name__, "operation": "__init__"},
+                ErrorSeverity.MEDIUM,
+                reraise=False
+            )
             # Set default values
             self.gold_settings = {
                 'Indicators': {
@@ -58,20 +66,52 @@ class DataProcessor:
         # Log indicator settings to ensure they're being loaded correctly
         self.logger.info(f"Loaded indicator settings: {self.gold_settings.get('Indicators', {})}")
 
+    @property
+    def error_context(self) -> Dict[str, Any]:
+        """Base context for error handling in this class"""
+        return {
+            "class": self.__class__.__name__,
+            "db_host": self.db_config.get('Host', 'unknown'),
+            "db_name": self.db_config.get('Database', 'unknown')
+        }
+
     def _create_engine(self):
         """Create SQLAlchemy engine for database connections."""
-        db = self.db_config
-        connection_string = (
-            f"mssql+pyodbc://{db['User']}:{db['Password']}@{db['Host']},{db['Port']}/"
-            f"{db['Database']}?driver=ODBC+Driver+17+for+SQL+Server"
-        )
-        return create_engine(connection_string)
+        context = {
+            **self.error_context,
+            "operation": "_create_engine"
+        }
+
+        try:
+            db = self.db_config
+            connection_string = (
+                f"mssql+pyodbc://{db['User']}:{db['Password']}@{db['Host']},{db['Port']}/"
+                f"{db['Database']}?driver=ODBC+Driver+17+for+SQL+Server"
+            )
+            return create_engine(connection_string)
+        except Exception as e:
+            self.error_handler.handle_error(
+                exception=e,
+                context=context,
+                severity=ErrorSeverity.FATAL,
+                reraise=True
+            )
+            raise
 
     def get_data_from_db(self, pair: str = "XAUUSD", timeframe: str = "H1",
                          data_type: str = "training") -> pd.DataFrame:
         """Retrieve data from database."""
+        context = {
+            **self.error_context,
+            "operation": "get_data_from_db",
+            "pair": pair,
+            "timeframe": timeframe,
+            "data_type": data_type
+        }
+
         try:
             table_name = f"{pair}_{timeframe.lower()}_{data_type}"
+            context["table_name"] = table_name
 
             self.logger.info(f"Retrieving {data_type} data for {pair} {timeframe}")
 
@@ -87,14 +127,30 @@ class DataProcessor:
             return df
 
         except Exception as e:
-            self.logger.error(f"Failed to retrieve data: {e}")
+            self.error_handler.handle_error(
+                exception=e,
+                context=context,
+                severity=ErrorSeverity.HIGH,
+                reraise=True
+            )
             raise
 
     def process_raw_data(self, df: pd.DataFrame) -> pd.DataFrame:
         """Process raw data with technical indicators."""
+        context = {
+            **self.error_context,
+            "operation": "process_raw_data",
+            "df_shape": str(df.shape) if df is not None else "None"
+        }
+
         try:
             if df.empty:
-                self.logger.warning("Empty dataframe provided for processing")
+                self.error_handler.handle_error(
+                    ValueError("Empty dataframe provided for processing"),
+                    context,
+                    ErrorSeverity.MEDIUM,
+                    reraise=False
+                )
                 return df
 
             self.logger.info(f"Processing {len(df)} rows of raw data")
@@ -104,7 +160,12 @@ class DataProcessor:
 
             # Ensure time column is present and properly formatted
             if 'time' not in processed_df.columns:
-                self.logger.error("Time column missing from input data")
+                self.error_handler.handle_error(
+                    ValueError("Time column missing from input data"),
+                    context,
+                    ErrorSeverity.HIGH,
+                    reraise=True
+                )
                 raise ValueError("Time column missing from input data")
 
             processed_df['time'] = pd.to_datetime(processed_df['time'])
@@ -119,14 +180,25 @@ class DataProcessor:
             return processed_df
 
         except Exception as e:
-            self.logger.error(f"Error in data processing: {e}")
+            self.error_handler.handle_error(
+                exception=e,
+                context=context,
+                severity=ErrorSeverity.HIGH,
+                reraise=True
+            )
             raise
 
     def calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
         """Calculate all technical indicators based on configuration."""
-        result = df.copy()
+        context = {
+            **self.error_context,
+            "operation": "calculate_indicators",
+            "df_shape": str(df.shape) if df is not None else "None"
+        }
 
         try:
+            result = df.copy()
+
             # Get indicator settings from config
             ma_settings = self.gold_settings.get('Indicators', {}).get('MovingAverages', {})
             volatility_settings = self.gold_settings.get('Indicators', {}).get('Volatility', {})
@@ -199,6 +271,12 @@ class DataProcessor:
 
             # Fallback to calculating all indicators if none were added from config
             if len(result.columns) <= len(df.columns) + 2:  # Allow for a couple of extra columns
+                self.error_handler.handle_error(
+                    ValueError("Few or no indicators were added from config"),
+                    context,
+                    ErrorSeverity.HIGH,
+                    reraise=False
+                )
                 self.logger.warning("Few or no indicators were added from config, calculating all")
                 result = self.indicators.calculate_all_indicators(result)
                 self.logger.info(f"Columns after fallback: {list(result.columns)}")
@@ -206,30 +284,63 @@ class DataProcessor:
             return result
 
         except Exception as e:
-            self.logger.error(f"Error calculating indicators: {e}")
+            self.error_handler.handle_error(
+                exception=e,
+                context=context,
+                severity=ErrorSeverity.HIGH,
+                reraise=True
+            )
             raise
 
     def handle_missing_values(self, df: pd.DataFrame, method: str = 'drop') -> pd.DataFrame:
         """Handle missing values in the dataframe."""
-        if method == 'drop':
-            original_len = len(df)
-            df = df.dropna()
-            dropped = original_len - len(df)
-            if dropped > 0:
-                self.logger.info(f"Dropped {dropped} rows with NaN values")
-            return df
-        elif method == 'fill':
-            df = df.fillna(method='ffill')
-            # Fill any remaining NaNs (at the beginning) with zeros
-            df = df.fillna(0)
-            self.logger.info("Filled NaN values using forward fill method")
-            return df
-        else:
-            self.logger.warning(f"Unknown missing value handling method: {method}, using drop")
-            return df.dropna()
+        context = {
+            **self.error_context,
+            "operation": "handle_missing_values",
+            "method": method,
+            "df_shape": str(df.shape) if df is not None else "None"
+        }
+
+        try:
+            if method == 'drop':
+                original_len = len(df)
+                df = df.dropna()
+                dropped = original_len - len(df)
+                if dropped > 0:
+                    self.logger.info(f"Dropped {dropped} rows with NaN values")
+                return df
+            elif method == 'fill':
+                df = df.fillna(method='ffill')
+                # Fill any remaining NaNs (at the beginning) with zeros
+                df = df.fillna(0)
+                self.logger.info("Filled NaN values using forward fill method")
+                return df
+            else:
+                self.error_handler.handle_error(
+                    ValueError(f"Unknown missing value handling method: {method}"),
+                    context,
+                    ErrorSeverity.LOW,
+                    reraise=False
+                )
+                self.logger.warning(f"Unknown missing value handling method: {method}, using drop")
+                return df.dropna()
+        except Exception as e:
+            self.error_handler.handle_error(
+                exception=e,
+                context=context,
+                severity=ErrorSeverity.MEDIUM,
+                reraise=True
+            )
+            raise
 
     def create_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """Create features for machine learning."""
+        context = {
+            **self.error_context,
+            "operation": "create_features",
+            "df_shape": str(df.shape) if df is not None else "None"
+        }
+
         try:
             feature_settings = self.gold_settings.get('FeatureEngineering', {})
             result = df.copy()
@@ -292,11 +403,22 @@ class DataProcessor:
             return result
 
         except Exception as e:
-            self.logger.error(f"Error creating features: {e}")
+            self.error_handler.handle_error(
+                exception=e,
+                context=context,
+                severity=ErrorSeverity.HIGH,
+                reraise=True
+            )
             raise
 
     def create_target_variables(self, df: pd.DataFrame) -> pd.DataFrame:
         """Create target variables for supervised learning."""
+        context = {
+            **self.error_context,
+            "operation": "create_target_variables",
+            "df_shape": str(df.shape) if df is not None else "None"
+        }
+
         try:
             ml_settings = self.gold_settings.get('MachineLearning', {})
             targets = ml_settings.get('Targets', {})
@@ -330,25 +452,55 @@ class DataProcessor:
             return result
 
         except Exception as e:
-            self.logger.error(f"Error creating target variables: {e}")
+            self.error_handler.handle_error(
+                exception=e,
+                context=context,
+                severity=ErrorSeverity.HIGH,
+                reraise=True
+            )
             raise
 
-    def prepare_dataset(self, pair: str = "XAUUSD", timeframe: str = "H1", data_type: str = "training") -> Tuple[
-        pd.DataFrame, pd.DataFrame]:
+    def prepare_dataset(self, pair: str = "XAUUSD", timeframe: str = "H1",
+                        data_type: str = "training") -> Tuple[pd.DataFrame, pd.DataFrame]:
         """Prepare a complete dataset for machine learning with features and targets."""
+        context = {
+            **self.error_context,
+            "operation": "prepare_dataset",
+            "pair": pair,
+            "timeframe": timeframe,
+            "data_type": data_type
+        }
+
         try:
             # Get raw data
             df = self.get_data_from_db(pair, timeframe, data_type)
             if df.empty:
+                self.error_handler.handle_error(
+                    ValueError(f"Empty dataframe returned from database for {pair} {timeframe} {data_type}"),
+                    context,
+                    ErrorSeverity.MEDIUM,
+                    reraise=False
+                )
                 return pd.DataFrame(), pd.DataFrame()
 
             # Verify chronological ordering
             if 'time' in df.columns:
                 if not df['time'].equals(df['time'].sort_values()):
+                    self.error_handler.handle_error(
+                        ValueError("Data not in chronological order"),
+                        context,
+                        ErrorSeverity.MEDIUM,
+                        reraise=False
+                    )
                     self.logger.warning("Data not in chronological order. Sorting by time.")
                     df = df.sort_values('time')
             else:
-                self.logger.error("Time column missing from input data")
+                self.error_handler.handle_error(
+                    ValueError("Time column missing from input data"),
+                    context,
+                    ErrorSeverity.HIGH,
+                    reraise=True
+                )
                 raise ValueError("Time column missing from input data")
 
             # Add technical indicators
@@ -370,6 +522,12 @@ class DataProcessor:
             # Ensure we maintain chronological order after dropping NaN values
             if time_col is not None and 'time' in df.columns:
                 if not df['time'].equals(df['time'].sort_values()):
+                    self.error_handler.handle_error(
+                        ValueError("Order changed after handling NaNs"),
+                        context,
+                        ErrorSeverity.LOW,
+                        reraise=False
+                    )
                     self.logger.warning("Order changed after handling NaNs. Restoring chronological order.")
                     df = df.sort_values('time')
 
@@ -401,6 +559,12 @@ class DataProcessor:
 
             # Final check for any NaN values
             if 'time' in X.columns and X['time'].isna().any():
+                self.error_handler.handle_error(
+                    ValueError("Time column contains NaN values after processing"),
+                    context,
+                    ErrorSeverity.MEDIUM,
+                    reraise=False
+                )
                 self.logger.warning("Time column contains NaN values, fixing...")
                 X = X.dropna(subset=['time'])
                 if not y.empty:
@@ -414,5 +578,10 @@ class DataProcessor:
             return X, y
 
         except Exception as e:
-            self.logger.error(f"Error preparing dataset: {e}")
+            self.error_handler.handle_error(
+                exception=e,
+                context=context,
+                severity=ErrorSeverity.HIGH,
+                reraise=True
+            )
             raise
