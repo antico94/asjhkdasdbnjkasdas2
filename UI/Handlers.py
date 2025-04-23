@@ -3,6 +3,7 @@ from Utilities.ErrorHandler import ErrorHandler, ErrorSeverity
 from Fetching.FetcherFactory import FetcherFactory
 from Processing.ProcessorFactory import ProcessorFactory
 from UI.cli import TradingBotCLI
+import pandas as pd
 
 
 def handle_fetch_data(cli: TradingBotCLI,
@@ -151,31 +152,35 @@ def process_datasets(processor, storage, logger, error_handler, pair, timeframe,
 
         try:
             print(f"Processing {dataset_type} data...")
-            X, y = processor.prepare_dataset(pair, timeframe, dataset_type)
 
-            if X.empty:
+            # Use prepare_processed_data instead of prepare_dataset
+            processed_data = processor.prepare_processed_data(pair, timeframe, dataset_type)
+
+            if processed_data.empty:
                 logger.warning(f"No data found for {pair} {timeframe} {dataset_type}")
                 print(f"✗ No data found for {dataset_type}")
                 continue
 
             # Log information about the processed data
-            logger.info(f"Processed {len(X)} rows for {pair} {timeframe} {dataset_type}")
-            logger.info(f"Features: {list(X.columns)}")
-            if not y.empty:
-                logger.info(f"Targets: {list(y.columns)}")
+            logger.info(f"Processed {len(processed_data)} rows for {pair} {timeframe} {dataset_type}")
+            logger.info(f"Features: {list(processed_data.columns)}")
+
+            # Create dummy empty DataFrame for y to maintain compatibility with storage function
+            dummy_y = pd.DataFrame()
+
+            # Extract 'time' column to preserve it
+            X = processed_data.copy()
 
             # Save processed data to database
             print(f"Saving processed data to database...")
             table_name = f"{pair}_{timeframe}_{dataset_type}_processed"
             context["table_name"] = table_name
 
-            db_success = storage.save_processed_data(X, y, pair, timeframe, dataset_type)
+            db_success = storage.save_processed_data(X, dummy_y, pair, timeframe, dataset_type)
 
             if db_success:
                 print(f"✓ Successfully saved {len(X)} rows to {table_name}")
                 print(f"  - Dataset includes {len(X.columns)} features")
-                if not y.empty:
-                    print(f"  - Created {len(y.columns)} target variables")
             else:
                 print(f"✗ Failed to save data to database")
 

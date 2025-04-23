@@ -159,15 +159,19 @@ class DataStorage:
             # Start with a copy of X
             combined_df = X.copy()
 
+            # In case we have no targets (empty y DataFrame), just return the features
+            if y.empty:
+                # No need to rename anything if we're not adding target columns
+                return combined_df
+
             # Rename feature columns (except time)
             for col in combined_df.columns:
                 if col != 'time':
                     combined_df = combined_df.rename(columns={col: f'feature_{col}'})
 
             # Add target columns if y is not empty
-            if not y.empty:
-                for col in y.columns:
-                    combined_df[f'target_{col}'] = y[col].values
+            for col in y.columns:
+                combined_df[f'target_{col}'] = y[col].values
 
             return combined_df
         except Exception as e:
