@@ -302,13 +302,24 @@ class FeatureAnalyzer:
                              selected_features: List[str], is_classification: bool = False) -> float:
         """Validate the selected feature set using time series cross-validation"""
         task_type = "classification" if is_classification else "regression"
-        print(f"Validating selected features for {task_type}...")
         self.logger.info(f"Validating selected features for {task_type}")
 
         try:
             if not selected_features:
                 self.logger.warning("No features to validate")
                 return 0.0
+
+            # Check if time column is present and ensure data is sorted chronologically
+            if 'time' in X.columns:
+                if not X['time'].equals(X['time'].sort_values()):
+                    self.logger.warning("Data is not sorted chronologically - sorting now")
+                    sorted_indices = X['time'].sort_values().index
+                    X = X.loc[sorted_indices]
+                    y = y.loc[sorted_indices]
+
+                # Store time column temporarily
+                time_col = X['time'].copy()
+                X = X.drop('time', axis=1)
 
             # Subset to selected features
             X_selected = X[selected_features]
@@ -672,3 +683,4 @@ class FeatureAnalyzer:
             "direction": direction_features,
             "magnitude": magnitude_features
         }
+

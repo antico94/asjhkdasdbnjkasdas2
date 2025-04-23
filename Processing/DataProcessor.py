@@ -252,12 +252,14 @@ class DataProcessor:
 
                     # Create return features (percent change)
                     col_name = f'{feature}_pct_change'
-                    result[col_name] = result[feature].pct_change()
+                    # Explicitly set periods as positive to ensure we're using past data
+                    result[col_name] = result[feature].pct_change(periods=1)
                     self.logger.debug(f"Created percent change feature: {col_name}")
 
                     for window in window_sizes:
                         col_name = f'{feature}_pct_change_{window}'
-                        result[col_name] = result[feature].pct_change(window)
+                        # Positive period to ensure we're using past data
+                        result[col_name] = result[feature].pct_change(periods=window)
                         self.logger.debug(f"Created percent change with window feature: {col_name}")
 
                     # Create rolling statistics
@@ -331,13 +333,23 @@ class DataProcessor:
             self.logger.error(f"Error creating target variables: {e}")
             raise
 
-    def prepare_dataset(self, pair: str = "XAUUSD", timeframe: str = "H1", data_type: str = "training") -> Tuple[pd.DataFrame, pd.DataFrame]:
+    def prepare_dataset(self, pair: str = "XAUUSD", timeframe: str = "H1", data_type: str = "training") -> Tuple[
+        pd.DataFrame, pd.DataFrame]:
         """Prepare a complete dataset for machine learning with features and targets."""
         try:
             # Get raw data
             df = self.get_data_from_db(pair, timeframe, data_type)
             if df.empty:
                 return pd.DataFrame(), pd.DataFrame()
+
+            # Verify chronological ordering
+            if 'time' in df.columns:
+                if not df['time'].equals(df['time'].sort_values()):
+                    self.logger.warning("Data not in chronological order. Sorting by time.")
+                    df = df.sort_values('time')
+            else:
+                self.logger.error("Time column missing from input data")
+                raise ValueError("Time column missing from input data")
 
             # Add technical indicators
             df = self.process_raw_data(df)
@@ -349,7 +361,17 @@ class DataProcessor:
             df = self.create_target_variables(df)
 
             # Drop NaN values from the dataset
+            time_col = None
+            if 'time' in df.columns:
+                time_col = df['time'].copy()
+
             df = self.handle_missing_values(df)
+
+            # Ensure we maintain chronological order after dropping NaN values
+            if time_col is not None and 'time' in df.columns:
+                if not df['time'].equals(df['time'].sort_values()):
+                    self.logger.warning("Order changed after handling NaNs. Restoring chronological order.")
+                    df = df.sort_values('time')
 
             # Prepare X and y
             ml_settings = self.gold_settings.get('MachineLearning', {})

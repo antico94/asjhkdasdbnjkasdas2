@@ -100,15 +100,15 @@ TrainingSettings:
       dropout: 0.2
       learning_rate: 0.001
       batch_size: 32
-      epochs: 50
-      early_stopping_patience: 10
+      epochs: 100
+      early_stopping_patience: 50
     GradientBoosting:
       hidden_units: [128, 64, 32]
       dropout: 0.3
       learning_rate: 0.001
       batch_size: 32
       epochs: 100
-      early_stopping_patience: 15
+      early_stopping_patience: 50
     LSTM:
       units: [64, 32]
       dropout: 0.2
@@ -116,5 +116,5 @@ TrainingSettings:
       learning_rate: 0.001
       batch_size: 32
       epochs: 100
-      early_stopping_patience: 15
+      early_stopping_patience: 50
       sequence_length: 10

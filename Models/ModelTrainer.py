@@ -32,6 +32,29 @@ class ModelTrainer:
                 self.logger.error(f"Target {target} not found in training data")
                 raise ValueError(f"Target {target} not found in training data")
 
+            # Verify chronological ordering of training and validation data
+            if 'time' in X_train.columns:
+                if not X_train['time'].equals(X_train['time'].sort_values()):
+                    self.logger.warning("Training data not in chronological order. Sorting by time.")
+                    sorted_indices = X_train['time'].sort_values().index
+                    X_train = X_train.loc[sorted_indices]
+                    y_train = y_train.loc[sorted_indices]
+
+                # Ensure validation data comes after training data
+                if 'time' in X_val.columns:
+                    min_val_time = X_val['time'].min()
+                    max_train_time = X_train['time'].max()
+                    if min_val_time <= max_train_time:
+                        self.logger.error(f"Data leakage detected: validation data overlaps with training data")
+                        raise ValueError("Validation data must come after training data")
+
+                # Also verify validation data is chronologically sorted
+                if not X_val['time'].equals(X_val['time'].sort_values()):
+                    self.logger.warning("Validation data not in chronological order. Sorting by time.")
+                    sorted_indices = X_val['time'].sort_values().index
+                    X_val = X_val.loc[sorted_indices]
+                    y_val = y_val.loc[sorted_indices]
+
             # Store original target data for validation
             self.target_name = target
 
@@ -80,7 +103,7 @@ class ModelTrainer:
             return X_train, y_train, X_val, y_val
 
         except Exception as e:
-            self.logger.error(f"Error preparing data: {e}")
+            self.logger.error(f"Error preparing data: {e}", exc_info=True)
             raise
 
     def train_model(self, model_type: str, pair: str, timeframe: str, target: str) -> ModelBase:

@@ -14,20 +14,7 @@ from sklearn.metrics import (
     cohen_kappa_score, log_loss, balanced_accuracy_score, roc_auc_score,
     accuracy_score
 )
-
-# Assuming ModelBase definition exists
-try:
-    from Models.ModelBase import ModelBase
-except ImportError:
-    print("Warning: ModelBase not found. Using a placeholder.")
-    class ModelBase:
-        def __init__(self, config: dict, logger: logging.Logger, name: str):
-            self.config = config
-            self.logger = logger
-            self.name = name
-            self.model = None
-            self.history = None
-
+from Models.ModelBase import ModelBase
 
 class DirectionClassificationModel(ModelBase):
     CLASS_DOWN = 0
@@ -129,71 +116,93 @@ class DirectionClassificationModel(ModelBase):
 
     # --- prepare_direction_data (Keep as it was in the full file example) ---
     def prepare_direction_data(self, y_data):
-        """ Prepares direction labels and logs distribution. (Implementation same as before) """
         if isinstance(y_data, pd.DataFrame):
             y_values = y_data.iloc[:, 0].values
         elif isinstance(y_data, pd.Series):
-             y_values = y_data.values
+            y_values = y_data.values
         elif isinstance(y_data, np.ndarray):
-             y_values = y_data.flatten()
+            y_values = y_data.flatten()
         else:
-             raise TypeError("y_data must be a pandas DataFrame, Series, or numpy array.")
+            raise TypeError("y_data must be a pandas DataFrame, Series, or numpy array.")
 
         if y_values.size == 0:
             self.logger.warning("Input y_data is empty for prepare_direction_data.")
             return np.array([], dtype=np.int32)
 
+        # Get valid keys from mapping to handle unknown values
+        valid_keys = set(self.DIRECTION_CLASS_MAPPING.keys())
+
         if self.is_multiclass:
             unique_values = np.unique(y_values)
             self.logger.debug(f"Original direction values (multiclass): {unique_values}")
-            y_processed = np.vectorize(self.DIRECTION_CLASS_MAPPING.get)(y_values)
+
+            # Use vectorized mapping with fallback for unknown values
+            y_processed = np.array([self.DIRECTION_CLASS_MAPPING.get(v, self.CLASS_NEUTRAL) for v in y_values])
+
             class_counts = np.bincount(y_processed, minlength=3)
             total_samples = len(y_processed)
-            class_distribution = { name: f"{class_counts[i]} ({class_counts[i] / total_samples:.1%})" for i, name in enumerate(self.CLASS_NAMES_MULTI)}
+            class_distribution = {name: f"{class_counts[i]} ({class_counts[i] / total_samples:.1%})"
+                                  for i, name in enumerate(self.CLASS_NAMES_MULTI)}
+
             self.class_distribution = class_distribution
             self.logger.info(f"Multiclass label distribution: {class_distribution}")
             return y_processed.astype(np.int32)
-        else: # Binary
+        else:
             unique_values = np.unique(y_values)
             self.logger.debug(f"Original direction values (binary): {unique_values}")
+
             y_processed = (y_values > 0).astype(np.int32)
             class_counts = np.bincount(y_processed, minlength=2)
             total_samples = len(y_processed)
-            class_distribution = { name: f"{class_counts[i]} ({class_counts[i] / total_samples:.1%})" for i, name in enumerate(self.CLASS_NAMES_BINARY)}
+            class_distribution = {name: f"{class_counts[i]} ({class_counts[i] / total_samples:.1%})"
+                                  for i, name in enumerate(self.CLASS_NAMES_BINARY)}
+
             self.class_distribution = class_distribution
             self.logger.info(f"Binary label distribution: {class_distribution}")
             return y_processed
 
 
-    # --- focal_loss (Defined as static method with decorator) ---
     @staticmethod
     @register_keras_serializable(package='Custom', name='FocalLoss')
     def focal_loss(gamma=2.0, alpha=0.25):
-        """ Focal Loss implementation (details same as before) """
         def sparse_categorical_focal_loss(y_true, y_pred):
             y_true = tf.cast(y_true, tf.int32)
             y_pred = tf.cast(y_pred, tf.float32)
+
             if len(y_true.shape) > 1 and y_true.shape[-1] == 1:
                 y_true = tf.squeeze(y_true, axis=-1)
+
             num_classes = tf.shape(y_pred)[1]
             y_true_one_hot = tf.one_hot(y_true, depth=num_classes, dtype=tf.float32)
+
             epsilon = tf.keras.backend.epsilon()
             y_pred = tf.clip_by_value(y_pred, epsilon, 1.0 - epsilon)
+
             p_t = tf.reduce_sum(y_true_one_hot * y_pred, axis=-1)
-            ce = -tf.math.log(p_t + epsilon)
-            focal_modulator = tf.pow(1.0 - p_t, gamma)
-            loss = focal_modulator * ce
+
+            # Apply alpha weights first for better class balancing
             if alpha is not None:
                 alpha_tensor = tf.constant(alpha, dtype=tf.float32)
                 alpha_t = tf.gather(alpha_tensor, y_true)
-                loss = alpha_t * loss
+                # Apply weight before modulation
+                weight = alpha_t
+            else:
+                weight = 1.0
+
+            # Compute focal modulation
+            ce = -tf.math.log(p_t + epsilon)
+            focal_modulator = tf.pow(1.0 - p_t, gamma)
+
+            # Apply weights then modulation
+            loss = weight * focal_modulator * ce
+
             return tf.reduce_mean(loss)
+
         alpha_str = str(alpha).replace('.', '_').replace('[', '').replace(']', '').replace(', ', '_')
         sparse_categorical_focal_loss.__name__ = f'focal_loss_g{gamma}_a{alpha_str}'
         return sparse_categorical_focal_loss
 
 
-    # --- _create_lr_schedule (Keep as it was in the full file example) ---
     def _create_lr_schedule(self, epochs):
         """ Creates a learning rate schedule with warmup and decay. (Implementation same as before) """
         def lr_scheduler(epoch, lr): # Keras passes current lr
@@ -302,108 +311,110 @@ class DirectionClassificationModel(ModelBase):
             return np.array([])
 
 
-    # --- FULLY REVISED train METHOD ---
+
     def train(self, X: pd.DataFrame, y: pd.DataFrame, validation_data=None) -> dict:
-        """
-        Trains the direction classification model. Handles model building,
-        compilation, data prep, fitting, and checkpointing.
-        """
-        self.logger.info(f"--- Starting Training for {self.name} ---")
-        self.history = {} # Initialize history attribute at the beginning
+        self.logger.info(f"Starting training for {self.name}")
+        self.history = {}
 
         if X.empty or y.empty:
-            self.logger.error("Training aborted: Input features (X) or labels (y) are empty.")
-            return {"error": "Input data is empty."}
+            self.logger.error("Training aborted: Empty input data")
+            return {"error": "Input data is empty"}
 
-        # --- Feature and Target Type Verification & Model Build/Rebuild ---
         try:
+            # Update feature columns if needed
             if not self.feature_columns:
-                 self.feature_columns = list(X.columns)
-                 self.logger.info(f"Set feature columns during training: {self.feature_columns}")
+                self.feature_columns = list(X.columns)
+                self.logger.info(f"Set {len(self.feature_columns)} feature columns")
             elif set(self.feature_columns) != set(X.columns):
-                 self.logger.warning("Input features differ from stored. Updating feature columns.")
-                 self.feature_columns = list(X.columns)
-                 # Force rebuild if feature count changes the expected input shape
-                 if self.model and hasattr(self.model, 'input_shape') and self.model.input_shape[1] != len(self.feature_columns):
-                      self.logger.info("Input feature count changed. Forcing model rebuild.")
-                      self.model = None # Mark for rebuild
+                self.logger.warning("Input features differ from stored features - updating")
+                self.feature_columns = list(X.columns)
+                if self.model and hasattr(self.model, 'input_shape') and self.model.input_shape[1] != len(
+                        self.feature_columns):
+                    self.logger.info("Input feature count changed - rebuilding model")
+                    self.model = None
 
+            # Determine classification type from target
             target_col = y.columns[0] if isinstance(y, pd.DataFrame) else y.name
             new_is_multiclass = self.is_multiclass
 
             if "direction" in target_col.lower():
                 unique_values = np.unique(y.iloc[:, 0].values if isinstance(y, pd.DataFrame) else y.values)
                 new_is_multiclass = len(unique_values) > 2 or np.any(unique_values < 0)
-                self.logger.info(f"Detected target type: {'Multiclass' if new_is_multiclass else 'Binary'} based on unique values: {unique_values}")
+                self.logger.info(
+                    f"Detected {'multiclass' if new_is_multiclass else 'binary'} target from values: {unique_values}")
             else:
-                 self.logger.warning(f"Target column '{target_col}' may not indicate direction. Assuming 'is_multiclass'={self.is_multiclass}.")
+                self.logger.warning(f"Target column '{target_col}' may not indicate direction")
 
+            # Rebuild model if necessary
+            # Rebuild model if necessary
             needs_rebuild = False
             if self.model is None:
                 needs_rebuild = True
             elif self.is_multiclass != new_is_multiclass:
                 needs_rebuild = True
-                self.logger.info(f"Switching model type.")
-            elif hasattr(self.model, 'output_shape') and self.model.output_shape is not None:
-                expected_output_size = 3 if new_is_multiclass else 1
-                if self.model.output_shape[-1] != expected_output_size:
-                    needs_rebuild = True
-            elif hasattr(self.model, 'input_shape') and self.model.input_shape is not None:
-                 if self.model.input_shape[-1] != X.shape[1]:
-                     needs_rebuild = True
+                self.logger.info("Switching model type - rebuilding")
+            elif self.model is not None:  # Add this check
+                if hasattr(self.model, 'output_shape') and self.model.output_shape is not None:
+                    expected_output_size = 3 if new_is_multiclass else 1
+                    if self.model.output_shape[-1] != expected_output_size:
+                        needs_rebuild = True
+                elif hasattr(self.model, 'input_shape') and self.model.input_shape is not None:
+                    if self.model.input_shape[-1] != X.shape[1]:
+                        needs_rebuild = True
 
             if needs_rebuild:
-                self.logger.info("Rebuilding model structure...")
+                self.logger.info("Rebuilding model")
                 self.is_multiclass = new_is_multiclass
                 self.build(input_shape=(X.shape[1],))
-                if self.model is None: raise RuntimeError("Model build failed during training.")
+                if self.model is None:
+                    raise RuntimeError("Model build failed")
 
-        except Exception as build_err:
-            self.logger.error(f"Model build/rebuild failed: {build_err}", exc_info=True)
-            return {"error": f"Model build/rebuild failed: {build_err}"}
-
-        # --- Data Preparation ---
-        try:
+            # Prepare training data
             X_train_np = X[self.feature_columns].values.astype(np.float32)
             X_train_scaled = self.scaler.fit_transform(X_train_np)
             self.feature_means = self.scaler.mean_
             self.feature_stds = self.scaler.scale_
+
             if self.feature_stds is not None and np.any(self.feature_stds == 0):
-                self.logger.warning("Scaler detected std dev of zero. Replacing with 1.0.")
+                self.logger.warning("Zero standard deviation detected - replacing with 1.0")
                 self.feature_stds[self.feature_stds == 0] = 1.0
 
             y_train = self.prepare_direction_data(y)
             total_train = len(y_train)
-            if total_train == 0: raise ValueError("Training labels became empty after preparation.")
+            if total_train == 0:
+                raise ValueError("No valid training labels after preparation")
 
+            # Prepare validation data consistently
             val_data_prepared = None
-            if validation_data is not None and isinstance(validation_data, (list, tuple)) and len(validation_data) == 2:
-                X_val, y_val = validation_data
-                if set(self.feature_columns) != set(X_val.columns):
-                    raise ValueError("Validation features mismatch training features.")
-                X_val_np = X_val[self.feature_columns].values.astype(np.float32)
-                X_val_scaled = self.scaler.transform(X_val_np)
-                y_val_prepared = self.prepare_direction_data(y_val)
-                val_data_prepared = (X_val_scaled, y_val_prepared)
-                self.logger.info("Validation data prepared.")
-            elif validation_data is not None:
-                self.logger.warning("Validation data ignored: incorrect format.")
+            if validation_data is not None:
+                try:
+                    X_val, y_val = validation_data
+                    if not isinstance(X_val, pd.DataFrame) or (isinstance(y_val, pd.DataFrame) and y_val.empty):
+                        self.logger.warning("Invalid validation data format - skipping validation")
+                    elif set(self.feature_columns) != set(X_val.columns):
+                        self.logger.warning("Validation features don't match training features - skipping validation")
+                    else:
+                        X_val_np = X_val[self.feature_columns].values.astype(np.float32)
+                        X_val_scaled = self.scaler.transform(X_val_np)
+                        y_val_prepared = self.prepare_direction_data(y_val)
+                        val_data_prepared = (X_val_scaled, y_val_prepared)
+                        self.logger.info(f"Prepared validation data with {len(X_val)} samples")
+                except Exception as e:
+                    self.logger.warning(f"Failed to prepare validation data: {e}")
+                    val_data_prepared = None
 
-        except Exception as prep_err:
-             self.logger.error(f"Data preparation failed: {prep_err}", exc_info=True)
-             return {"error": f"Data preparation failed: {prep_err}"}
-
-        # --- Determine Loss, Metrics, Optimizer and Compile ---
-        try:
+            # Configure loss function, metrics and optimizer
             use_focal_loss = self.model_config.get("use_focal_loss", True)
-            learning_rate = self.model_config.get("learning_rate", 0.001) # Base LR for optimizer
+            learning_rate = self.model_config.get("learning_rate", 0.001)
             loss_to_compile = None
             metrics_to_compile = []
-            self.class_weights = None # Reset class weights
+            self.class_weights = None
 
             if self.is_multiclass:
                 metrics_to_compile = [keras.metrics.SparseCategoricalAccuracy(name="accuracy")]
                 class_counts_train = np.bincount(y_train, minlength=3)
+
+                # Configure focal loss or class weights for multiclass
                 if use_focal_loss and total_train > 0 and not np.any(class_counts_train == 0):
                     beta = 0.999
                     effective_num = 1.0 - np.power(beta, class_counts_train)
@@ -412,137 +423,147 @@ class DirectionClassificationModel(ModelBase):
                     alpha_weights = np.clip(alpha_weights, 0.1, 0.9)
                     focal_alpha = list(alpha_weights)
                     loss_to_compile = self.focal_loss(gamma=2.0, alpha=focal_alpha)
-                    self.logger.info(f"Using Focal Loss with dynamic alpha: {focal_alpha}")
+                    self.logger.info(f"Using focal loss with alpha: {focal_alpha}")
                 else:
-                    if use_focal_loss: self.logger.warning("Cannot use Focal Loss (missing classes/data).")
+                    if use_focal_loss:
+                        self.logger.warning("Cannot use focal loss - missing classes or data")
                     loss_to_compile = "sparse_categorical_crossentropy"
-                    # Calculate class weights if not using focal loss
+
+                    # Calculate class weights
                     if total_train > 0 and not np.any(class_counts_train == 0):
-                         weight_values = class_weight.compute_class_weight('balanced', classes=np.arange(3), y=y_train)
-                         weight_values = np.clip(weight_values, 0.2, 5.0)
-                         self.class_weights = dict(enumerate(weight_values))
-                         weights_log = {self.CLASS_NAMES_MULTI[i]: f"{w:.2f}" for i, w in self.class_weights.items()}
-                         self.logger.info(f"Using Class Weights: {weights_log}")
+                        weight_values = class_weight.compute_class_weight('balanced', classes=np.arange(3), y=y_train)
+                        weight_values = np.clip(weight_values, 0.2, 5.0)
+                        self.class_weights = dict(enumerate(weight_values))
+                        self.logger.info(f"Using class weights: {self.class_weights}")
                     else:
-                         self.logger.warning("Cannot compute class weights (missing classes/data). Using equal weights.")
-                         self.class_weights = {0: 1.0, 1: 1.0, 2: 1.0}
-            else: # Binary
+                        self.logger.warning("Cannot compute class weights - using equal weights")
+                        self.class_weights = {0: 1.0, 1: 1.0, 2: 1.0}
+            else:
+                # Binary classification setup
                 loss_to_compile = "binary_crossentropy"
-                metrics_to_compile = [keras.metrics.BinaryAccuracy(name="accuracy"), keras.metrics.AUC(name="auc")]
+                metrics_to_compile = [
+                    keras.metrics.BinaryAccuracy(name="accuracy"),
+                    keras.metrics.AUC(name="auc")
+                ]
+
                 class_counts_train = np.bincount(y_train, minlength=2)
                 if total_train > 0 and not np.any(class_counts_train == 0):
-                     weight_values = class_weight.compute_class_weight('balanced', classes=np.arange(2), y=y_train)
-                     weight_values = np.clip(weight_values, 0.2, 5.0)
-                     self.class_weights = dict(enumerate(weight_values))
-                     weights_log = {self.CLASS_NAMES_BINARY[i]: f"{w:.2f}" for i, w in self.class_weights.items()}
-                     self.logger.info(f"Using Class Weights: {weights_log}")
+                    weight_values = class_weight.compute_class_weight('balanced', classes=np.arange(2), y=y_train)
+                    weight_values = np.clip(weight_values, 0.2, 5.0)
+                    self.class_weights = dict(enumerate(weight_values))
+                    self.logger.info(f"Using class weights: {self.class_weights}")
                 else:
-                     self.logger.warning("Cannot compute class weights (missing classes/data). Using equal weights.")
-                     self.class_weights = {0: 1.0, 1: 1.0}
+                    self.logger.warning("Cannot compute class weights - using equal weights")
+                    self.class_weights = {0: 1.0, 1: 1.0}
 
-            optimizer = keras.optimizers.Adam(learning_rate=learning_rate) # LR schedule handles rate changes later
-
-            # Compile the model before fitting
+            # Compile model
+            optimizer = keras.optimizers.Adam(learning_rate=learning_rate)
             self.model.compile(optimizer=optimizer, loss=loss_to_compile, metrics=metrics_to_compile)
-            self.logger.info("Model compiled successfully.")
+            self.logger.info("Model compiled successfully")
 
-        except Exception as compile_err:
-             self.logger.error(f"Model compilation failed: {compile_err}", exc_info=True)
-             return {"error": f"Model compilation failed: {compile_err}"}
-
-
-        # --- Callbacks Setup ---
-        try:
-            epochs = self.model_config.get("epochs", 50)
-            patience = self.model_config.get("early_stopping_patience", 15)
+            # Configure callbacks
+            epochs = self.model_config.get("epochs", 100)
+            patience = self.model_config.get("early_stopping_patience", 50)
             batch_size = self.model_config.get("batch_size", 128)
             save_checkpoints = self.model_config.get("save_checkpoints", True)
+
             log_dir = f'./logs/{self.name}'
             os.makedirs(log_dir, exist_ok=True)
             checkpoint_filepath = os.path.join(log_dir, f"{self.name}_best_weights.weights.h5")
 
             callbacks = [
-                 keras.callbacks.EarlyStopping(
-                     monitor="val_loss" if val_data_prepared else "loss", patience=patience,
-                     restore_best_weights=True, verbose=1, mode='min'
-                 ),
-                 keras.callbacks.LearningRateScheduler(self._create_lr_schedule(epochs), verbose=0),
-                 keras.callbacks.TensorBoard(log_dir=log_dir, histogram_freq=1)
+                keras.callbacks.EarlyStopping(
+                    monitor="val_loss" if val_data_prepared else "loss",
+                    patience=patience,
+                    restore_best_weights=True,
+                    verbose=1,
+                    mode='min'
+                ),
+                keras.callbacks.LearningRateScheduler(self._create_lr_schedule(epochs), verbose=0),
+                keras.callbacks.TensorBoard(log_dir=log_dir, histogram_freq=1)
             ]
+
             if save_checkpoints:
-                 callbacks.append(keras.callbacks.ModelCheckpoint(
-                     filepath=checkpoint_filepath, save_best_only=True, save_weights_only=True,
-                     monitor="val_loss" if val_data_prepared else "loss", verbose=1, mode='min'
-                 ))
-        except Exception as cb_err:
-             self.logger.error(f"Callback setup failed: {cb_err}", exc_info=True)
-             return {"error": f"Callback setup failed: {cb_err}"}
+                callbacks.append(keras.callbacks.ModelCheckpoint(
+                    filepath=checkpoint_filepath,
+                    save_best_only=True,
+                    save_weights_only=True,
+                    monitor="val_loss" if val_data_prepared else "loss",
+                    verbose=1,
+                    mode='min'
+                ))
 
+            # Train model with balanced sampling or standard approach
+            self.logger.info(f"Starting model fitting with {epochs} epochs, batch size {batch_size}")
+            fit_args = {"epochs": epochs, "callbacks": callbacks, "verbose": 1}
 
-        # --- Model Fitting ---
-        self.logger.info(f"Starting model fitting... Epochs: {epochs}, Batch Size: {batch_size}")
-        fit_args = {"epochs": epochs, "callbacks": callbacks, "verbose": 1}
-        if val_data_prepared: fit_args["validation_data"] = val_data_prepared
+            use_balanced_sampling = self.model_config.get("use_balanced_batch_sampling", False)
+            min_c, max_c = np.min(class_counts_train), np.max(class_counts_train)
+            imbalance_ratio = max_c / min_c if min_c > 0 else float('inf')
 
-        use_balanced_sampling_config = self.model_config.get("use_balanced_batch_sampling", False)
-        min_c, max_c = np.min(class_counts_train), np.max(class_counts_train)
-        imbalance_ratio_train = max_c / min_c if min_c > 0 else float('inf')
+            history_obj = None
 
-        # Local variable for history within the try block for fitting
-        history_obj = None
-        try:
-            if self.is_multiclass and use_balanced_sampling_config and imbalance_ratio_train > 5.0 :
-                self.logger.info(f"Using balanced batch sampling (imbalance ratio: {imbalance_ratio_train:.1f})")
+            # For multiclass with imbalance, use balanced sampling if configured
+            if self.is_multiclass and use_balanced_sampling and imbalance_ratio > 5.0:
+                self.logger.info(f"Using balanced sampling (imbalance ratio: {imbalance_ratio:.1f})")
                 train_dataset = self._create_balanced_dataset(X_train_scaled, y_train, batch_size=batch_size)
-                if not train_dataset: raise RuntimeError("Failed to create balanced dataset.")
+
+                if not train_dataset:
+                    raise RuntimeError("Failed to create balanced dataset")
+
                 fit_args["steps_per_epoch"] = max(1, total_train // batch_size)
+
+                # Create consistent validation dataset format
                 if val_data_prepared:
-                    val_dataset = tf.data.Dataset.from_tensor_slices(val_data_prepared).batch(batch_size).prefetch(tf.data.AUTOTUNE)
+                    X_val_scaled, y_val_prepared = val_data_prepared
+                    val_dataset = tf.data.Dataset.from_tensor_slices((X_val_scaled, y_val_prepared))
+                    val_dataset = val_dataset.batch(batch_size).prefetch(tf.data.AUTOTUNE)
                     fit_args["validation_data"] = val_dataset
-                history_obj = self.model.fit(train_dataset, **fit_args) # No class_weight with sampling
+
+                history_obj = self.model.fit(train_dataset, **fit_args)
             else:
-                self.logger.info("Using standard training data feed.")
+                # Standard training approach
+                self.logger.info("Using standard training approach")
                 fit_args["x"] = X_train_scaled
                 fit_args["y"] = y_train
                 fit_args["batch_size"] = batch_size
-                # Apply class weights ONLY if they were calculated (i.e., not using focal loss)
+
+                # Add validation data in correct format for standard training
+                if val_data_prepared:
+                    fit_args["validation_data"] = val_data_prepared
+
+                # Apply class weights if available
                 if self.class_weights:
-                     fit_args["class_weight"] = self.class_weights
-                     self.logger.info("Applying class weights.")
-                else:
-                     self.logger.info("Not applying class weights (using focal loss or weights unavailable).")
+                    fit_args["class_weight"] = self.class_weights
+                    self.logger.info("Applying class weights")
+
                 history_obj = self.model.fit(**fit_args)
 
-            # Assign to self.history ONLY if fit was successful
+            # Store training history
             if history_obj:
-                 self.history = history_obj.history
-                 self.logger.info("Model fitting finished successfully.")
+                self.history = history_obj.history
+                self.logger.info("Model training completed successfully")
 
-        except Exception as fit_err:
-             self.logger.error(f"Model fitting failed: {fit_err}", exc_info=True)
-             # self.history remains {}, return error
-             return {"error": f"Model fitting failed: {fit_err}"}
+                # Log training results
+                final_metrics = {k: f"{v[-1]:.4f}" for k, v in self.history.items()}
+                self.logger.info(f"Final metrics: {final_metrics}")
 
-        # --- Post-Training Logging (if fit succeeded) ---
-        if save_checkpoints:
-             if os.path.exists(checkpoint_filepath): self.logger.info(f"Best weights saved: {checkpoint_filepath}")
-             else: self.logger.warning("Checkpoint file not found despite restore_best_weights=True.")
+                if 'val_loss' in self.history:
+                    best_epoch = np.argmin(self.history['val_loss'])
+                    best_val_metrics = {k: f"{v[best_epoch]:.4f}" for k, v in self.history.items() if
+                                        k.startswith('val_')}
+                    self.logger.info(f"Best validation (epoch {best_epoch + 1}): {best_val_metrics}")
+            else:
+                self.logger.warning("Training finished but no history was generated")
 
-        if self.history: # Check if history dict is populated
-            final_metrics = {k: f"{v[-1]:.4f}" for k, v in self.history.items()}
-            self.logger.info(f"Training completed. Final epoch metrics: {final_metrics}")
-            if val_data_prepared and 'val_loss' in self.history:
-                best_val_loss_epoch = np.argmin(self.history['val_loss'])
-                best_val_metrics = {k: f"{v[best_val_loss_epoch]:.4f}" for k, v in self.history.items() if k.startswith('val_')}
-                self.logger.info(f"Best validation metrics (epoch {best_val_loss_epoch + 1}): {best_val_metrics}")
-        else:
-            self.logger.warning("Training finished, but no history object was generated.")
+            return self.history
 
-        self.logger.info(f"--- Training Finished for {self.name} ---")
-        return self.history
+        except Exception as e:
+            self.logger.error(f"Training failed: {e}", exc_info=True)
+            return {"error": f"Training failed: {str(e)}"}
 
 
-    # --- FULLY REVISED evaluate METHOD ---
+
     def evaluate(self, X: pd.DataFrame, y: pd.DataFrame) -> dict:
         """
         Provides comprehensive evaluation metrics. Ensures data shapes are correct.
