@@ -4,8 +4,6 @@ from Utilities.LoggingUtils import Logger
 from Processing.ProcessorFactory import ProcessorFactory
 from Fetching.FetcherFactory import FetcherFactory
 from Utilities.PathResolver import PathResolver
-from Models.ModelFactory import ModelFactory
-from Backtesting.BacktestFactory import BacktestFactory
 import logging
 
 
@@ -53,27 +51,8 @@ class Container(containers.DeclarativeContainer):
         factory=processor_factory
     )
 
-    # Model factory
-    model_factory = providers.Singleton(
-        ModelFactory,
-        config=config,
-        logger=logger,
-        feature_service=feature_service,
-        path_resolver=path_resolver
-    )
-
     # Data storage for convenience
     data_storage = providers.Callable(
         lambda factory: factory.create_data_storage(),
         factory=processor_factory
-    )
-
-    # Backtest factory
-    backtest_factory = providers.Singleton(
-        BacktestFactory,
-        config=config,
-        logger=logger,
-        model_factory=model_factory,
-        data_storage=data_storage,
-        path_resolver=path_resolver
     )

@@ -3,7 +3,6 @@ import pandas as pd
 import pyodbc
 from datetime import datetime, timedelta
 from typing import Dict
-
 from Utilities.ConfigurationUtils import Config
 from Utilities.LoggingUtils import Logger
 from Configuration.Constants import TimeFrames, CurrencyPairs

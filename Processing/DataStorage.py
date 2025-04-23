@@ -1,6 +1,7 @@
+from typing import Tuple
+
 import pandas as pd
 from sqlalchemy import create_engine, text
-from typing import Dict, Tuple, Optional
 
 from Utilities.ConfigurationUtils import Config
 from Utilities.LoggingUtils import Logger

@@ -2,7 +2,6 @@ from enum import Enum
 
 
 class TimeFrames(Enum):
-    M15 = "M15"
     H1 = "H1"
     H4 = "H4"
     D1 = "D1"

@@ -1,7 +1,8 @@
 import logging
-from sqlalchemy import create_engine, Table, Column, DateTime, String, MetaData, text
 from datetime import datetime
 from typing import Optional, Dict, Any
+
+from sqlalchemy import create_engine, MetaData, text
 
 
 class DatabaseLogHandler(logging.Handler):
