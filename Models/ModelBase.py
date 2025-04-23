@@ -41,8 +41,9 @@ class ModelBase(ABC):
             # Ensure directory exists
             os.makedirs(os.path.dirname(path), exist_ok=True)
 
-            # Save TensorFlow model
-            self.model.save(path)
+            # Save TensorFlow model with proper extension
+            model_path = f"{path}.keras"  # Use .keras extension (preferred in newer TF versions)
+            self.model.save(model_path)
 
             # Save feature columns and metadata
             metadata = {
@@ -52,10 +53,11 @@ class ModelBase(ABC):
                 "saved_at": datetime.now().isoformat()
             }
 
-            with open(f"{path}_metadata.json", "w") as f:
+            metadata_path = f"{path}_metadata.json"
+            with open(metadata_path, "w") as f:
                 json.dump(metadata, f)
 
-            self.logger.info(f"Model {self.name} saved to {path}")
+            self.logger.info(f"Model {self.name} saved to {model_path}")
             return True
         except Exception as e:
             self.logger.error(f"Failed to save model {self.name}: {e}")
@@ -63,12 +65,19 @@ class ModelBase(ABC):
 
     def load(self, path: str) -> bool:
         try:
-            if not os.path.exists(path):
-                self.logger.error(f"Model path not found: {path}")
-                return False
+            # Try different possible file extensions
+            model_path = f"{path}.keras"
+            if not os.path.exists(model_path):
+                model_path = f"{path}.h5"
+                if not os.path.exists(model_path):
+                    # Try without extension (original path)
+                    if not os.path.exists(path):
+                        self.logger.error(f"Model path not found: {path}")
+                        return False
+                    model_path = path
 
             # Load TensorFlow model
-            self.model = keras.models.load_model(path)
+            self.model = keras.models.load_model(model_path)
 
             # Load metadata
             metadata_path = f"{path}_metadata.json"
@@ -80,7 +89,7 @@ class ModelBase(ABC):
                 self.metrics = metadata.get("metrics", {})
                 self.name = metadata.get("name", self.name)
 
-            self.logger.info(f"Model {self.name} loaded from {path}")
+            self.logger.info(f"Model {self.name} loaded from {model_path}")
             return True
         except Exception as e:
             self.logger.error(f"Failed to load model {self.name}: {e}")

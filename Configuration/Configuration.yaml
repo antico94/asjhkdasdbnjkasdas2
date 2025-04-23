@@ -88,7 +88,7 @@ GoldTradingSettings:
         Threshold: 0.001  # 0.1% price movement threshold for direction
 Paths:
   FeatureAnalysisReport: "FeatureAnalysis/feature_analysis_report.txt"
-# Add this to Configuration/Configuration.yaml
+# Training settings
 TrainingSettings:
   DefaultPair: "XAUUSD"
   DefaultTimeframe: "H1"
@@ -118,3 +118,21 @@ TrainingSettings:
       epochs: 100
       early_stopping_patience: 50
       sequence_length: 10
+# Backtesting settings
+BacktestSettings:
+  DefaultPair: "XAUUSD"
+  DefaultTimeframe: "H1"
+  InitialCapital: 10000
+  Commission: 0.0002  # 0.02% per trade (both entry and exit)
+  Slippage: 0.0001    # 1 pip slippage
+  optimize_metric: "Sharpe Ratio"  # Metric to optimize during parameter tuning
+  DefaultParameters:
+    tp_ratio: 2.0     # Take-profit to stop-loss ratio
+    sl_ratio: 1.0     # Base stop-loss ratio
+    min_confidence: 0.55  # Minimum confidence for direction prediction
+    volatility_scale: 1.0  # Scale position size by volatility
+  OptimizationRanges:
+    tp_ratio: [1.5, 3.0]
+    sl_ratio: [0.5, 1.5]
+    min_confidence: [0.5, 0.75]
+    volatility_scale: [0.5, 2.0]

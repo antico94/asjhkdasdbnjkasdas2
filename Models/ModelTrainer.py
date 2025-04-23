@@ -1,4 +1,5 @@
 from typing import Dict, Any, List, Tuple, Optional
+import os
 import numpy as np
 import pandas as pd
 from tensorflow import keras
@@ -7,6 +8,7 @@ import logging
 from Models.ModelFactory import ModelFactory
 from Models.ModelBase import ModelBase
 
+
 class ModelTrainer:
     def __init__(self, config: Dict[str, Any], logger: logging.Logger, model_factory: ModelFactory, data_storage):
         self.config = config
@@ -14,6 +16,9 @@ class ModelTrainer:
         self.model_factory = model_factory
         self.data_storage = data_storage
         self.feature_service = model_factory.feature_service
+        self.path_resolver = model_factory.path_resolver
+        # Ensure base directory exists
+        os.makedirs(self.path_resolver.resolve_path("TrainedModels"), exist_ok=True)
 
     def prepare_data(self, pair: str, timeframe: str, target: str) -> Tuple[
         pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
@@ -121,20 +126,32 @@ class ModelTrainer:
             model.build(input_shape)
 
             # Train model
-            validation_data = (X_val, y_val[target].values)
+            validation_data = (X_val, y_val)
             history = model.train(X_train, y_train, validation_data)
 
             # Evaluate model
             metrics = model.evaluate(X_val, y_val)
+            self.logger.info(f"Evaluation metrics: {metrics}")
 
             # Save model
-            self.model_factory.save_model(model)
+            # Get model directory path
+            model_dir = self.path_resolver.resolve_path("TrainedModels")
+            os.makedirs(model_dir, exist_ok=True)
 
-            self.logger.info(f"Successfully trained and saved {model_type} model for {pair} {timeframe} {target}")
+            # Create full path without file extension (will be added in save method)
+            save_path = os.path.join(model_dir, model.name)
+
+            success = model.save(save_path)
+            if success:
+                self.logger.info(f"Successfully saved model {model.name} to {save_path}")
+            else:
+                self.logger.error(f"Failed to save model {model.name}")
+
+            self.logger.info(f"Successfully trained model {model_type} for {pair} {timeframe} {target}")
             return model
 
         except Exception as e:
-            self.logger.error(f"Failed to train model: {e}")
+            self.logger.error(f"Failed to train model: {e}", exc_info=True)
             raise
 
     def train_all_models(self, pair: str, timeframe: str) -> Dict[str, ModelBase]:
@@ -160,7 +177,7 @@ class ModelTrainer:
                             self.logger.error(f"Failed to train {model_type} for {target}: {e}")
 
             if 'DirectionPrediction' in targets:
-                horizons = targets['PricePrediction'].get('Horizons', [1, 3, 5])
+                horizons = targets['DirectionPrediction'].get('Horizons', [1, 3, 5])
 
                 for horizon in horizons:
                     target = f"direction_{horizon}"

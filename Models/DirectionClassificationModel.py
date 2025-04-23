@@ -719,34 +719,32 @@ class DirectionClassificationModel(ModelBase):
             return {"error": f"Evaluation failed: {e}"}
 
 
-    # --- FULLY REVISED save METHOD (Weights Only) ---
-    def save(self, path: str) -> None:
+    def save(self, path: str) -> bool:
         """
         Saves the model's weights and necessary metadata (scaler, features, etc.).
         Uses model.save_weights() for robustness.
         """
         if self.model is None:
             self.logger.error(f"Cannot save {self.name}: No model object found.")
-            return
+            return False
         if not self.model.built:
-             self.logger.error(f"Cannot save {self.name}: Model is not built.")
-             return
+            self.logger.error(f"Cannot save {self.name}: Model is not built.")
+            return False
         if not self.feature_columns:
             self.logger.warning(f"Saving model {self.name} without stored feature columns.")
         # Check if scaler params exist, required for consistent loading
         if self.feature_means is None or self.feature_stds is None:
-             self.logger.warning(f"Saving model {self.name} without scaler parameters (means/stds). Reloading might require retraining the scaler.")
-
+            self.logger.warning(
+                f"Saving model {self.name} without scaler parameters (means/stds). Reloading might require retraining the scaler.")
 
         try:
-            os.makedirs(path, exist_ok=True)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
             self.logger.info(f"Saving model '{self.name}' weights and metadata to: {path}")
 
             # 1. Save Model Weights
-            weights_filename = f"{self.name}_weights.weights.h5" # Specific extension
-            weights_path = os.path.join(path, weights_filename)
-            self.model.save_weights(weights_path) # Use save_weights
-            self.logger.info(f"Model weights saved to {weights_path}")
+            weights_filename = f"{path}_weights.keras"  # Use .keras extension for compatibility
+            self.model.save_weights(weights_filename)  # Use save_weights
+            self.logger.info(f"Model weights saved to {weights_filename}")
 
             # 2. Save Metadata
             metadata = {
@@ -755,26 +753,27 @@ class DirectionClassificationModel(ModelBase):
                 "is_multiclass": self.is_multiclass,
                 "feature_columns": self.feature_columns,
                 # Store input shape HINT used for build (e.g., number of features)
-                "input_shape_hint": self.model.input_shape[1:] if hasattr(self.model, 'input_shape') and self.model.input_shape else (len(self.feature_columns),) if self.feature_columns else None,
+                "input_shape_hint": self.model.input_shape[1:] if hasattr(self.model,
+                                                                          'input_shape') and self.model.input_shape else (
+                len(self.feature_columns),) if self.feature_columns else None,
                 "scaler_means": self.feature_means.tolist() if self.feature_means is not None else None,
                 "scaler_stds": self.feature_stds.tolist() if self.feature_stds is not None else None,
                 "class_distribution_train": self.class_distribution,
-                "weights_filename": weights_filename, # Link to weights file
+                "weights_filename": os.path.basename(weights_filename),  # Link to weights file
                 # Store the configuration used for building architecture if needed
-                "model_config_build": self.model_config # Save config relevant to build
+                "model_config_build": self.model_config  # Save config relevant to build
             }
-            metadata_filename = f"{self.name}_metadata.json"
-            metadata_path = os.path.join(path, metadata_filename)
-            with open(metadata_path, 'w') as f:
+            metadata_filename = f"{path}_metadata.json"
+            with open(metadata_filename, 'w') as f:
                 json.dump(metadata, f, indent=4)
-            self.logger.info(f"Model metadata saved to {metadata_path}")
+            self.logger.info(f"Model metadata saved to {metadata_filename}")
+
+            return True
 
         except Exception as e:
             self.logger.error(f"Failed to save model weights/metadata for {self.name} to {path}: {e}", exc_info=True)
-            raise
+            return False
 
-
-    # --- FULLY REVISED load METHOD (Rebuild + Weights + Compile) ---
     @classmethod
     def load(cls, path: str, config: dict, logger: logging.Logger) -> 'DirectionClassificationModel':
         """
@@ -786,13 +785,25 @@ class DirectionClassificationModel(ModelBase):
             # 1. Find and load metadata
             metadata_path = None
             expected_metadata_suffix = "_metadata.json"
-            for fname in os.listdir(path):
-                if fname.endswith(expected_metadata_suffix):
-                    metadata_path = os.path.join(path, fname)
-                    logger.info(f"Found metadata file: {metadata_path}")
-                    break
+
+            # First check direct path + suffix
+            direct_metadata_path = f"{path}{expected_metadata_suffix}"
+            if os.path.exists(direct_metadata_path):
+                metadata_path = direct_metadata_path
+                logger.info(f"Found metadata file: {metadata_path}")
+            else:
+                # Check directory for metadata file matching pattern
+                base_dir = os.path.dirname(path)
+                base_name = os.path.basename(path)
+
+                for fname in os.listdir(base_dir):
+                    if fname.startswith(base_name) and fname.endswith(expected_metadata_suffix):
+                        metadata_path = os.path.join(base_dir, fname)
+                        logger.info(f"Found metadata file: {metadata_path}")
+                        break
+
             if not metadata_path:
-                raise FileNotFoundError(f"Metadata JSON file (*{expected_metadata_suffix}) not found in {path}")
+                raise FileNotFoundError(f"Metadata JSON file (*{expected_metadata_suffix}) not found for {path}")
 
             with open(metadata_path, 'r') as f:
                 metadata = json.load(f)
@@ -802,25 +813,29 @@ class DirectionClassificationModel(ModelBase):
             model_name = metadata.get("name", "loaded_model")
             # Use the original config potentially updated with saved build config
             # This allows loading architecture independent of current run's config
-            instance_config = config # Start with current config
+            instance_config = config  # Start with current config
             saved_model_config = metadata.get("model_config_build")
             if saved_model_config:
-                 # Need a deep merge strategy if only partially overriding
-                 logger.info("Using saved model config for build parameters.")
-                 # Simple override for now:
-                 instance_config['TrainingSettings'] = instance_config.get('TrainingSettings', {})
-                 instance_config['TrainingSettings']['ModelConfig'] = instance_config['TrainingSettings'].get('ModelConfig', {})
-                 instance_config['TrainingSettings']['ModelConfig'][cls.__name__] = saved_model_config
+                # Need a deep merge strategy if only partially overriding
+                logger.info("Using saved model config for build parameters.")
+                # Simple override for now:
+                instance_config['TrainingSettings'] = instance_config.get('TrainingSettings', {})
+                instance_config['TrainingSettings']['ModelConfig'] = instance_config['TrainingSettings'].get(
+                    'ModelConfig', {})
+                instance_config['TrainingSettings']['ModelConfig'][cls.__name__] = saved_model_config
 
             instance = cls(config=instance_config, logger=logger, name=model_name)
 
             # Restore state from metadata BEFORE building
             instance.is_multiclass = metadata.get("is_multiclass")
-            if instance.is_multiclass is None: raise ValueError("Metadata missing 'is_multiclass' flag.")
+            if instance.is_multiclass is None:
+                logger.warning("Metadata missing 'is_multiclass' flag, defaulting to True")
+                instance.is_multiclass = True
+
             instance.feature_columns = metadata.get("feature_columns", [])
             input_shape_hint = metadata.get("input_shape_hint")
             if not instance.feature_columns and not input_shape_hint:
-                 raise ValueError("Metadata lacks feature_columns and input_shape_hint; cannot determine input shape.")
+                raise ValueError("Metadata lacks feature_columns and input_shape_hint; cannot determine input shape.")
             if not input_shape_hint: input_shape_hint = (len(instance.feature_columns),)
 
             # Restore scaler
@@ -832,7 +847,8 @@ class DirectionClassificationModel(ModelBase):
                 instance.scaler = StandardScaler()
                 instance.scaler.mean_ = instance.feature_means
                 instance.scaler.scale_ = instance.feature_stds
-                if instance.feature_columns: instance.scaler.n_features_in_ = len(instance.feature_columns)
+                if instance.feature_columns:
+                    instance.scaler.n_features_in_ = len(instance.feature_columns)
                 logger.info("StandardScaler parameters restored.")
             else:
                 logger.warning("Scaler parameters not found in metadata.")
@@ -842,13 +858,52 @@ class DirectionClassificationModel(ModelBase):
             logger.info(f"Rebuilding model structure with input shape hint: {input_shape_hint}")
             instance.build(input_shape=input_shape_hint)
             if instance.model is None:
-                 raise RuntimeError("Model build failed during load.")
+                raise RuntimeError("Model build failed during load.")
 
             # --- 3. Load Weights ---
+            # Check different possible weight file locations and formats
             weights_filename = metadata.get("weights_filename")
-            if not weights_filename: raise ValueError("Metadata missing 'weights_filename'.")
-            weights_path = os.path.join(path, weights_filename)
-            if not os.path.exists(weights_path): raise FileNotFoundError(f"Weights file not found: {weights_path}")
+            weights_path = None
+
+            if weights_filename:
+                # Try exact path from metadata
+                weights_path = os.path.join(os.path.dirname(path), weights_filename)
+                if not os.path.exists(weights_path):
+                    logger.warning(f"Weights file not found at path from metadata: {weights_path}")
+                    weights_path = None
+
+            # If weights path from metadata doesn't exist, try common patterns
+            if not weights_path:
+                # Try various common patterns
+                weight_patterns = [
+                    f"{path}_weights.keras",
+                    f"{path}_weights.h5",
+                    f"{path}_weights.weights.h5",
+                    f"{path}.weights.h5",
+                    f"{path}.keras",
+                    f"{path}.h5"
+                ]
+
+                for wp in weight_patterns:
+                    if os.path.exists(wp):
+                        weights_path = wp
+                        logger.info(f"Found weights at: {weights_path}")
+                        break
+
+            if not weights_path:
+                # Last attempt - search directory for any file with the model name and weights
+                base_dir = os.path.dirname(path)
+                base_name = os.path.basename(path)
+
+                for fname in os.listdir(base_dir):
+                    if fname.startswith(base_name) and "weights" in fname.lower() and (
+                            fname.endswith(".h5") or fname.endswith(".keras")):
+                        weights_path = os.path.join(base_dir, fname)
+                        logger.info(f"Found weights via directory search: {weights_path}")
+                        break
+
+            if not weights_path:
+                raise FileNotFoundError(f"No weights file found for {path}")
 
             instance.model.load_weights(weights_path)
             logger.info(f"Model weights loaded successfully from {weights_path}")
@@ -861,13 +916,14 @@ class DirectionClassificationModel(ModelBase):
             compile_loss = None
             compile_metrics = []
             if instance.is_multiclass:
-                 # Cannot reliably restore dynamic focal loss alpha without saving it. Use standard.
-                 compile_loss = "sparse_categorical_crossentropy"
-                 compile_metrics = [keras.metrics.SparseCategoricalAccuracy(name="accuracy")]
-                 logger.warning("Compiling loaded multiclass model with standard SparseCategoricalCrossentropy (Focal Loss alpha state not saved).")
+                # Cannot reliably restore dynamic focal loss alpha without saving it. Use standard.
+                compile_loss = "sparse_categorical_crossentropy"
+                compile_metrics = [keras.metrics.SparseCategoricalAccuracy(name="accuracy")]
+                logger.warning(
+                    "Compiling loaded multiclass model with standard SparseCategoricalCrossentropy (Focal Loss alpha state not saved).")
             else:
-                 compile_loss = "binary_crossentropy"
-                 compile_metrics = [keras.metrics.BinaryAccuracy(name="accuracy"), keras.metrics.AUC(name="auc")]
+                compile_loss = "binary_crossentropy"
+                compile_metrics = [keras.metrics.BinaryAccuracy(name="accuracy"), keras.metrics.AUC(name="auc")]
 
             # Use a base learning rate, scheduler is not restored here
             compile_lr = instance.model_config.get("learning_rate", 0.001)
@@ -880,8 +936,8 @@ class DirectionClassificationModel(ModelBase):
             return instance
 
         except FileNotFoundError as fnf_err:
-             logger.error(f"Failed to load model from {path}: {fnf_err}", exc_info=True)
-             raise fnf_err
+            logger.error(f"Failed to load model from {path}: {fnf_err}")
+            raise fnf_err
         except Exception as e:
             logger.error(f"Failed to load model from {path}: {e}", exc_info=True)
             raise Exception(f"Failed to load model from {path}: {e}")

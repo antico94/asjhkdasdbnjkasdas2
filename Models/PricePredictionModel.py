@@ -364,8 +364,9 @@ class PricePredictionModel(ModelBase):
             import os
             os.makedirs(os.path.dirname(path), exist_ok=True)
 
-            # Save TensorFlow model
-            self.model.save(path)
+            # Save TensorFlow model - ensure proper extension
+            model_path = f"{path}.keras"
+            self.model.save(model_path)
 
             # Save feature columns, scaler parameters and metadata
             import json
@@ -392,10 +393,61 @@ class PricePredictionModel(ModelBase):
             with open(f"{path}_metadata.json", "w") as f:
                 json.dump(metadata, f)
 
-            self.logger.info(f"Model {self.name} saved to {path}")
+            self.logger.info(f"Model {self.name} saved to {model_path}")
             return True
         except Exception as e:
             self.logger.error(f"Failed to save model {self.name}: {e}")
+            return False
+
+    def load(self, path: str) -> bool:
+        """Override load method to restore scaler parameters"""
+        try:
+            import os
+            import json
+
+            # Try different possible file extensions
+            model_path = f"{path}.keras"
+            if not os.path.exists(model_path):
+                model_path = f"{path}.h5"
+                if not os.path.exists(model_path):
+                    # Try without extension (original path)
+                    if not os.path.exists(path):
+                        self.logger.error(f"Model path not found: {path}")
+                        return False
+                    model_path = path
+
+            # Load TensorFlow model
+            self.model = keras.models.load_model(model_path)
+
+            # Load metadata
+            metadata_path = f"{path}_metadata.json"
+            if os.path.exists(metadata_path):
+                with open(metadata_path, "r") as f:
+                    metadata = json.load(f)
+
+                self.feature_columns = metadata.get("feature_columns", [])
+                self.metrics = metadata.get("metrics", {})
+                self.name = metadata.get("name", self.name)
+                self.normalize_target = metadata.get("normalize_target", False)
+
+                if "target_mean" in metadata:
+                    self.target_mean = metadata["target_mean"]
+
+                # Load feature scaler parameters
+                if "feature_means" in metadata and "feature_stds" in metadata:
+                    self.feature_means = np.array(metadata["feature_means"])
+                    self.feature_stds = np.array(metadata["feature_stds"])
+
+                # Load target scaler if needed
+                if self.normalize_target and "target_mean" in metadata and "target_std" in metadata:
+                    self.target_scaler = StandardScaler()
+                    self.target_scaler.mean_ = np.array(metadata["target_mean"])
+                    self.target_scaler.scale_ = np.array(metadata["target_std"])
+
+            self.logger.info(f"Model {self.name} loaded from {model_path}")
+            return True
+        except Exception as e:
+            self.logger.error(f"Failed to load model {self.name}: {e}")
             return False
 
     def load(self, path: str) -> bool:

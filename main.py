@@ -1,5 +1,10 @@
+import pandas as pd
+import questionary
+
 from Configuration.Constants import CurrencyPairs
 from dependency_injector.wiring import inject, Provide
+import os
+from typing import Dict, List, Any
 
 from Models.ModelFactory import ModelFactory
 from Models.ModelTrainer import ModelTrainer
@@ -9,6 +14,7 @@ from Utilities.LoggingUtils import Logger
 from Fetching.FetcherFactory import FetcherFactory
 from Processing.ProcessorFactory import ProcessorFactory
 from Processing.FeatureService import FeatureService
+from Backtesting.BacktestFactory import BacktestFactory
 from UI.cli import TradingBotCLI
 from UI.Constants import AppMode
 
@@ -20,8 +26,9 @@ def main(
         fetcher_factory: FetcherFactory = Provide[Container.fetcher_factory],
         processor_factory: ProcessorFactory = Provide[Container.processor_factory],
         feature_service: FeatureService = Provide[Container.feature_service],
-        model_factory: ModelFactory = Provide[Container.model_factory],  # Add this parameter
-        data_storage=Provide[Container.data_storage],  # Add this parameter
+        model_factory: ModelFactory = Provide[Container.model_factory],
+        data_storage=Provide[Container.data_storage],
+        backtest_factory: BacktestFactory = Provide[Container.backtest_factory]
 ) -> None:
     logger.info('Application started')
     # Log configuration values
@@ -56,6 +63,8 @@ def main(
             handle_analyze_features(cli, logger, processor_factory, feature_service)
         elif action == AppMode.TRAIN_MODEL.value:
             handle_train_model(cli, logger, model_factory, data_storage)
+        elif action == AppMode.BACKTEST.value:
+            handle_backtest(cli, logger, backtest_factory, model_factory, data_storage)
         else:
             logger.info(f'Selected action: {action}')
 
@@ -154,6 +163,7 @@ def handle_process_data(cli: TradingBotCLI, logger: Logger, processor_factory: P
                 logger.info("Dataset selection cancelled")
                 print("Dataset selection cancelled")
 
+
 def handle_train_model(cli: TradingBotCLI, logger: Logger, model_factory: ModelFactory, data_storage) -> None:
     """Handle model training flow"""
     # Create trainer
@@ -203,8 +213,6 @@ def _train_selected_models(model_trainer, logger, pair, timeframe, model_selecti
         print(f"Model selection value: '{model_selection}'")
 
         trained_models = {}
-
-        # Based on model selection, train appropriate models
         model_selection = str(model_selection).lower()  # Ensure string and lowercase
 
         if model_selection in ['direction', 'both']:
@@ -227,9 +235,19 @@ def _train_selected_models(model_trainer, logger, pair, timeframe, model_selecti
             else:
                 print("✗ Failed to train Magnitude model")
 
+        # Log summary of all trained models
+        if trained_models:
+            model_names = ", ".join(f"{key}: {model.name}" for key, model in trained_models.items())
+            logger.info(f"Trained models: {model_names}")
+            print(f"All models have been saved to the TrainedModels directory")
+
+        return trained_models
+
     except Exception as e:
-        logger.error(f"Error training models: {e}")
+        logger.error(f"Error training models: {e}", exc_info=True)
         print(f"✗ Error: {str(e)}")
+        return {}
+
 
 def handle_analyze_features(
         cli: TradingBotCLI,
@@ -321,6 +339,197 @@ def handle_analyze_features(
                 logger.info("Feature analysis configuration cancelled")
                 print("Feature analysis configuration cancelled")
 
+
+def handle_backtest(cli: TradingBotCLI, logger: Logger, backtest_factory: BacktestFactory,
+                    model_factory: ModelFactory, data_storage) -> None:
+    """Handle backtest flow"""
+    # Create backtest manager
+    backtest_manager = backtest_factory.create_backtest_manager()
+
+    while True:
+        backtest_action = cli.backtest_menu()
+
+        if backtest_action == "back":
+            logger.info("Returning to main menu")
+            break
+
+        elif backtest_action == "run_backtest":
+            logger.info("Running backtest with current settings")
+
+            # Get current backtest settings
+            backtest_config = model_factory.config.get('BacktestSettings', {})
+            pair = backtest_config.get('DefaultPair', 'XAUUSD')
+            timeframe = backtest_config.get('DefaultTimeframe', 'H1')
+
+            print(f"Running backtest for {CurrencyPairs.display_name(pair)} {timeframe}...")
+
+            # Get custom parameters if desired
+            use_custom_params = questionary.confirm(
+                'Do you want to use custom strategy parameters?',
+                default=False
+            ).ask()
+
+            params = None
+            if use_custom_params:
+                params = cli.backtest_parameters_menu()
+                if not params:
+                    print("Custom parameters cancelled. Using default parameters.")
+
+            try:
+                # Run the backtest
+                results = backtest_manager.run_full_backtest(pair, timeframe, optimize=False)
+
+                if results:
+                    print(f"✓ Backtest completed successfully")
+                    display_backtest_summary(results)
+                    print(f"  - Full results saved to {results['result_path']}")
+                else:
+                    print("✗ Backtest failed")
+            except Exception as e:
+                logger.error(f"Error running backtest: {e}", exc_info=True)
+                print(f"✗ Error running backtest: {str(e)}")
+
+        elif backtest_action == "run_optimized":
+            logger.info("Running optimized backtest")
+
+            # Get current backtest settings
+            backtest_config = model_factory.config.get('BacktestSettings', {})
+            pair = backtest_config.get('DefaultPair', 'XAUUSD')
+            timeframe = backtest_config.get('DefaultTimeframe', 'H1')
+
+            print(f"Running optimized backtest for {CurrencyPairs.display_name(pair)} {timeframe}...")
+            print("This may take some time as multiple parameter combinations will be tested.")
+
+            try:
+                # Run the backtest with optimization
+                results = backtest_manager.run_full_backtest(pair, timeframe, optimize=True)
+
+                if results and 'optimization' in results:
+                    print(f"✓ Optimized backtest completed successfully")
+                    print(f"Best parameters found:")
+                    for param, value in results['optimization']['best_params'].items():
+                        print(f"  - {param}: {value}")
+
+                    display_backtest_summary(results)
+                    print(f"  - Full results and heatmaps saved to {results['optimization']['result_path']}")
+                else:
+                    print("✗ Optimization failed")
+            except Exception as e:
+                logger.error(f"Error running optimized backtest: {e}", exc_info=True)
+                print(f"✗ Error running optimized backtest: {str(e)}")
+
+        elif backtest_action == "change_config":
+            logger.info("Changing backtest configuration")
+
+            backtest_config = cli.change_backtest_config_menu()
+
+            if backtest_config:
+                logger.info(f"New backtest configuration: {backtest_config}")
+
+                # Update config in memory (not saved to file)
+                if not model_factory.config.get('BacktestSettings'):
+                    model_factory.config._config['BacktestSettings'] = {}
+
+                model_factory.config._config['BacktestSettings']['DefaultPair'] = backtest_config['pair']
+                model_factory.config._config['BacktestSettings']['DefaultTimeframe'] = backtest_config['timeframe']
+
+                print(
+                    f"Backtest configuration updated to {CurrencyPairs.display_name(backtest_config['pair'])} {backtest_config['timeframe']}")
+            else:
+                logger.info("Backtest configuration change cancelled")
+                print("Backtest configuration change cancelled")
+
+        elif backtest_action == "view_results":
+            logger.info("Viewing previous backtest results")
+
+            # Get list of result directories
+            results_dir = backtest_manager.results_dir
+            if not os.path.exists(results_dir):
+                print("No backtest results found.")
+                continue
+
+            result_dirs = [d for d in os.listdir(results_dir)
+                           if os.path.isdir(os.path.join(results_dir, d))]
+
+            if not result_dirs:
+                print("No backtest results found.")
+                continue
+
+            # Format result dirs for display
+            formatted_results = []
+            for result_dir in result_dirs:
+                parts = result_dir.split('_')
+                if len(parts) >= 3:
+                    # Format: PAIR_TIMEFRAME_TIMESTAMP or PAIR_TIMEFRAME_optimization_TIMESTAMP
+                    if 'optimization' in parts:
+                        formatted_results.append(f"{parts[0]} {parts[1]} (Optimized) - {parts[-2]}_{parts[-1]}")
+                    else:
+                        formatted_results.append(f"{parts[0]} {parts[1]} - {parts[2]}")
+                else:
+                    formatted_results.append(result_dir)
+
+            # Let user select a result to view
+            selected = cli.select_backtest_results_menu(formatted_results)
+
+            if selected:
+                # Find the actual directory from the formatted name
+                idx = formatted_results.index(selected)
+                result_dir = result_dirs[idx]
+
+                # Check if stats.csv exists
+                stats_path = os.path.join(results_dir, result_dir, "stats.csv")
+                if os.path.exists(stats_path):
+                    try:
+                        stats_df = pd.read_csv(stats_path)
+                        print("\nBacktest Results Summary:")
+                        print("===========================")
+
+                        # Display key metrics
+                        for col in stats_df.columns:
+                            if col != 'Unnamed: 0':  # Skip index column
+                                value = stats_df[col].iloc[0]
+                                if isinstance(value, float):
+                                    print(f"{col}: {value:.4f}")
+                                else:
+                                    print(f"{col}: {value}")
+
+                        print("\nView the full report in the results directory:")
+                        print(f"{os.path.join(results_dir, result_dir)}")
+                    except Exception as e:
+                        logger.error(f"Error loading backtest results: {e}")
+                        print(f"Error loading backtest results: {str(e)}")
+                else:
+                    print(f"Results file not found at {stats_path}")
+
+
+def display_backtest_summary(results: Dict[str, Any]) -> None:
+    """Display a summary of backtest results."""
+    if 'result' not in results:
+        print("No results to display")
+        return
+
+    result = results['result']
+
+    # Display key performance metrics
+    print("\nBacktest Results Summary:")
+    print("===========================")
+    print(f"Return: {result['Return']:.2f}%")
+    print(f"Sharpe Ratio: {result['Sharpe Ratio']:.2f}")
+    print(f"Max Drawdown: {result['Max. Drawdown']:.2f}%")
+    print(f"Win Rate: {result['Win Rate']:.2f}%")
+    print(f"Avg. Trade: {result['Avg. Trade']:.2f}%")
+    print(f"# Trades: {result['# Trades']}")
+    print(f"SQN: {result.get('SQN', 0):.2f}")
+
+    # Show trade distribution
+    if 'trades' in results:
+        trades = results['trades']
+        winners = sum(1 for t in trades if t['PnL'] > 0)
+        losers = sum(1 for t in trades if t['PnL'] < 0)
+
+        print("\nTrade Distribution:")
+        print(f"Winning Trades: {winners} ({(winners / len(trades) * 100 if trades else 0):.1f}%)")
+        print(f"Losing Trades: {losers} ({(losers / len(trades) * 100 if trades else 0):.1f}%)")
 
 
 def display_top_features(

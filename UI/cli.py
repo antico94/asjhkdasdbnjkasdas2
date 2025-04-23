@@ -313,3 +313,146 @@ class TradingBotCLI:
         result['models'] = selected_models
 
         return result
+
+    def backtest_menu(self) -> str:
+        """Menu for backtesting options."""
+        print("Backtesting Options:")
+        print("This will test your trained models on unseen data to evaluate trading performance.")
+        print()
+
+        # Get backtest settings from config if available
+        backtest_config = self.config.get('BacktestSettings', {})
+        pair = backtest_config.get('DefaultPair', 'XAUUSD')
+        timeframe = backtest_config.get('DefaultTimeframe', 'H1')
+
+        # Show current config
+        config_display = [
+            "Current Backtest Configuration:",
+            f"• Currency Pair: {CurrencyPairs.display_name(pair)}",
+            f"• Timeframe: {timeframe}",
+        ]
+
+        for line in config_display:
+            print(line)
+        print()  # Add empty line for better readability
+
+        choices = [
+            Choice("Run backtest with current settings", "run_backtest"),
+            Choice("Run backtest with optimization", "run_optimized"),
+            Choice("Change backtest configuration", "change_config"),
+            Choice("View previous backtest results", "view_results"),
+            Choice("Go back", "back")
+        ]
+
+        return questionary.select(
+            'Select a backtest option:',
+            choices=choices
+        ).ask() or 'back'
+
+    def change_backtest_config_menu(self) -> Optional[Dict[str, Any]]:
+        """Menu for changing the backtest configuration."""
+        result = {}
+
+        # 1. Select currency pair
+        pairs = [CurrencyPairs.XAUUSD, CurrencyPairs.USDJPY, CurrencyPairs.EURUSD, CurrencyPairs.GBPUSD]
+        pair_choices = [Choice(CurrencyPairs.display_name(p), p) for p in pairs]
+
+        selected_pair = questionary.select(
+            'Select currency pair:',
+            choices=pair_choices
+        ).ask()
+
+        if not selected_pair:
+            return None
+        result['pair'] = selected_pair
+
+        # 2. Select timeframe
+        timeframes = [tf.value for tf in TimeFrames]
+        timeframe = questionary.select(
+            'Select timeframe:',
+            choices=timeframes
+        ).ask()
+
+        if not timeframe:
+            return None
+        result['timeframe'] = timeframe
+
+        # 3. Ask about parameter optimization
+        result['optimize'] = questionary.confirm(
+            'Do you want to perform parameter optimization?',
+            default=False
+        ).ask()
+
+        if result['optimize'] is None:  # User pressed Ctrl+C
+            return None
+
+        return result
+
+    def backtest_parameters_menu(self) -> Optional[Dict[str, Any]]:
+        """Menu for configuring backtest strategy parameters."""
+        result = {}
+
+        # 1. Set take-profit ratio
+        tp_ratio = questionary.text(
+            'Set take-profit ratio (default: 2.0):',
+            default="2.0",
+            validate=lambda text: text.replace('.', '', 1).isdigit() and float(text) > 0
+        ).ask()
+
+        if not tp_ratio:
+            return None
+        result['tp_ratio'] = float(tp_ratio)
+
+        # 2. Set stop-loss ratio
+        sl_ratio = questionary.text(
+            'Set stop-loss ratio (default: 1.0):',
+            default="1.0",
+            validate=lambda text: text.replace('.', '', 1).isdigit() and float(text) > 0
+        ).ask()
+
+        if not sl_ratio:
+            return None
+        result['sl_ratio'] = float(sl_ratio)
+
+        # 3. Set minimum confidence threshold
+        min_confidence = questionary.text(
+            'Set minimum confidence threshold (default: 0.55):',
+            default="0.55",
+            validate=lambda text: text.replace('.', '', 1).isdigit() and 0 <= float(text) <= 1
+        ).ask()
+
+        if not min_confidence:
+            return None
+        result['min_confidence'] = float(min_confidence)
+
+        # 4. Set volatility scaling factor
+        volatility_scale = questionary.text(
+            'Set volatility scaling factor (default: 1.0):',
+            default="1.0",
+            validate=lambda text: text.replace('.', '', 1).isdigit() and float(text) > 0
+        ).ask()
+
+        if not volatility_scale:
+            return None
+        result['volatility_scale'] = float(volatility_scale)
+
+        return result
+
+    def select_backtest_results_menu(self, results_list: List[str]) -> Optional[str]:
+        """Menu for selecting backtest results to view."""
+        if not results_list:
+            print("No backtest results found.")
+            return None
+
+        choices = [Choice(result, result) for result in results_list]
+        choices.append(Choice("Go back", "back"))
+
+        selected = questionary.select(
+            'Select backtest result to view:',
+            choices=choices
+        ).ask()
+
+        if not selected or selected == "back":
+            return None
+
+        return selected
