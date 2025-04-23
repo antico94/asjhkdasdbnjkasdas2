@@ -19,16 +19,16 @@ Database:
   Database: "TestDB"
 GoldTradingSettings:
   RiskManagement:
-    max_risk_per_trade: 0.05  # Maximum risk per trade (5% of account balance)
-    base_risk_per_trade: 0.01  # Base risk per trade (1% of account balance)
-    max_position_size_factor: 0.1  # Maximum position size factor
-    stop_loss_atr_multiplier: 1.5  # Stop loss multiplier based on ATR
-    stop_loss_volatility_factor: 0.5  # Stop loss adjustment based on volatility
-    take_profit_risk_ratio: 2.0  # Take profit to risk ratio
-    partial_take_profit_level: 0.5  # Level to take partial profits
-    partial_take_profit_pct: 0.5  # Percentage to close at partial profit
-    breakeven_level: 1.0  # Level to move stop loss to breakeven
-    max_open_trades: 5  # Maximum number of open trades
+    max_risk_per_trade: 0.05
+    base_risk_per_trade: 0.01
+    max_position_size_factor: 0.1
+    stop_loss_atr_multiplier: 1.5
+    stop_loss_volatility_factor: 0.5
+    take_profit_risk_ratio: 2.0
+    partial_take_profit_level: 0.5
+    partial_take_profit_pct: 0.5
+    breakeven_level: 1.0
+    max_open_trades: 5
   Indicators:
     MovingAverages:
       SMA:
@@ -55,4 +55,8 @@ GoldTradingSettings:
         DPeriod: 3
         SlowingPeriod: 3
     PivotPoints:
-      Method: "standard"  # Options: standard, fibonacci, woodie, camarilla
+      Method: "standard"
+  FeatureEngineering:
+    WindowSizes: [1, 3, 5]
+    PriceFeatures: ["close", "high", "low", "open"]
+    DefaultColumn: "close"

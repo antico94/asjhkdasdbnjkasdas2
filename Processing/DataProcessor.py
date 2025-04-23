@@ -15,56 +15,71 @@ class DataProcessor:
         self.logger = logger
         self.error_handler = error_handler
 
-        # Get GoldTradingSettings from config
-        self.gold_settings = config.get('GoldTradingSettings', {})
+        # Get GoldTradingSettings from config - no fallbacks, must exist
+        self.gold_settings = config.get('GoldTradingSettings')
 
-        # Log if GoldTradingSettings is missing or empty
-        if not self.gold_settings:
-            self.logger.warning("GoldTradingSettings is missing or empty in config. Using default values.")
-            self.error_handler.handle_error(
-                ValueError("GoldTradingSettings is missing or empty in config"),
-                {"class": self.__class__.__name__, "operation": "__init__"},
-                ErrorSeverity.MEDIUM,
-                reraise=False
-            )
-            # Set default values
-            self.gold_settings = {
-                'Indicators': {
-                    'MovingAverages': {
-                        'SMA': {'Periods': [5, 8, 13, 21, 50, 200]},
-                        'EMA': {'Periods': [5, 8, 13, 21, 50, 200]},
-                        'MACD': {'FastPeriod': 12, 'SlowPeriod': 26, 'SignalPeriod': 9}
-                    },
-                    'Volatility': {
-                        'BollingerBands': {'Period': 20, 'NumStd': 2.0},
-                        'ATR': {'Period': 14}
-                    },
-                    'Momentum': {
-                        'RSI': {'Period': 14, 'OverBought': 70, 'OverSold': 30},
-                        'Stochastic': {'KPeriod': 14, 'DPeriod': 3, 'SlowingPeriod': 3}
-                    },
-                    'PivotPoints': {'Method': 'standard'}
-                },
-                'FeatureEngineering': {
-                    'WindowSizes': [1, 3, 5],
-                    'PriceFeatures': ['close', 'high', 'low', 'open']
-                },
-                'MachineLearning': {
-                    'Targets': {
-                        'PricePrediction': {'Horizons': [1, 3, 5]},
-                        'DirectionPrediction': {'Threshold': 0.001}
-                    }
-                }
-            }
-        else:
-            self.logger.info("GoldTradingSettings found in config.")
+        # Validate required config sections
+        self._validate_config()
 
-        self.db_config = config.get('Database', {})
+        self.db_config = config.get('Database')
         self.indicators = TechnicalIndicators()
         self.engine = self._create_engine()
 
         # Log indicator settings to ensure they're being loaded correctly
         self.logger.info(f"Loaded indicator settings: {self.gold_settings.get('Indicators', {})}")
+
+    def _validate_config(self) -> None:
+        """Validate that all required configuration sections exist"""
+        context = {
+            "class": self.__class__.__name__,
+            "operation": "_validate_config"
+        }
+
+        if not self.gold_settings:
+            self.error_handler.handle_error(
+                ValueError("GoldTradingSettings missing from configuration"),
+                context,
+                ErrorSeverity.FATAL,
+                reraise=True
+            )
+
+        # Validate essential sections
+        required_sections = ['Indicators', 'FeatureEngineering']
+        missing_sections = [section for section in required_sections if section not in self.gold_settings]
+
+        if missing_sections:
+            self.error_handler.handle_error(
+                ValueError(f"Missing required configuration sections: {missing_sections}"),
+                context,
+                ErrorSeverity.FATAL,
+                reraise=True
+            )
+
+        # Validate indicator subsections
+        indicator_sections = ['MovingAverages', 'Volatility', 'Momentum', 'PivotPoints']
+        missing_indicators = [section for section in indicator_sections
+                              if section not in self.gold_settings['Indicators']]
+
+        if missing_indicators:
+            self.error_handler.handle_error(
+                ValueError(f"Missing indicator configuration sections: {missing_indicators}"),
+                context,
+                ErrorSeverity.FATAL,
+                reraise=True
+            )
+
+        # Validate feature engineering settings
+        required_feature_settings = ['WindowSizes', 'PriceFeatures', 'DefaultColumn']
+        missing_feature_settings = [setting for setting in required_feature_settings
+                                    if setting not in self.gold_settings['FeatureEngineering']]
+
+        if missing_feature_settings:
+            self.error_handler.handle_error(
+                ValueError(f"Missing feature engineering settings: {missing_feature_settings}"),
+                context,
+                ErrorSeverity.FATAL,
+                reraise=True
+            )
 
     @property
     def error_context(self) -> Dict[str, Any]:
@@ -149,9 +164,8 @@ class DataProcessor:
                     ValueError("Empty dataframe provided for processing"),
                     context,
                     ErrorSeverity.MEDIUM,
-                    reraise=False
+                    reraise=True
                 )
-                return df
 
             self.logger.info(f"Processing {len(df)} rows of raw data")
 
@@ -166,7 +180,6 @@ class DataProcessor:
                     ErrorSeverity.HIGH,
                     reraise=True
                 )
-                raise ValueError("Time column missing from input data")
 
             processed_df['time'] = pd.to_datetime(processed_df['time'])
 
@@ -200,10 +213,10 @@ class DataProcessor:
             result = df.copy()
 
             # Get indicator settings from config
-            ma_settings = self.gold_settings.get('Indicators', {}).get('MovingAverages', {})
-            volatility_settings = self.gold_settings.get('Indicators', {}).get('Volatility', {})
-            momentum_settings = self.gold_settings.get('Indicators', {}).get('Momentum', {})
-            pivot_settings = self.gold_settings.get('Indicators', {}).get('PivotPoints', {})
+            ma_settings = self.gold_settings['Indicators']['MovingAverages']
+            volatility_settings = self.gold_settings['Indicators']['Volatility']
+            momentum_settings = self.gold_settings['Indicators']['Momentum']
+            pivot_settings = self.gold_settings['Indicators']['PivotPoints']
 
             # Log the settings being used
             self.logger.info(f"MA settings: {ma_settings}")
@@ -211,75 +224,75 @@ class DataProcessor:
             self.logger.info(f"Momentum settings: {momentum_settings}")
             self.logger.info(f"Pivot settings: {pivot_settings}")
 
+            # Get default column for indicators
+            default_column = self.gold_settings['FeatureEngineering']['DefaultColumn']
+
             # Calculate Moving Averages
             if 'SMA' in ma_settings:
-                periods = ma_settings['SMA'].get('Periods', [5, 8, 13, 21, 50, 200])
+                periods = ma_settings['SMA']['Periods']
                 self.logger.info(f"Calculating SMA with periods: {periods}")
-                result = self.indicators.calculate_sma(result, periods=periods)
+                result = self.indicators.calculate_sma(result, column=default_column, periods=periods)
 
             if 'EMA' in ma_settings:
-                periods = ma_settings['EMA'].get('Periods', [5, 8, 13, 21, 50, 200])
+                periods = ma_settings['EMA']['Periods']
                 self.logger.info(f"Calculating EMA with periods: {periods}")
-                result = self.indicators.calculate_ema(result, periods=periods)
+                result = self.indicators.calculate_ema(result, column=default_column, periods=periods)
 
             if 'MACD' in ma_settings:
-                fast_period = ma_settings['MACD'].get('FastPeriod', 12)
-                slow_period = ma_settings['MACD'].get('SlowPeriod', 26)
-                signal_period = ma_settings['MACD'].get('SignalPeriod', 9)
+                fast_period = ma_settings['MACD']['FastPeriod']
+                slow_period = ma_settings['MACD']['SlowPeriod']
+                signal_period = ma_settings['MACD']['SignalPeriod']
                 self.logger.info(
                     f"Calculating MACD with fast={fast_period}, slow={slow_period}, signal={signal_period}")
                 result = self.indicators.calculate_macd(
-                    result, fast_period=fast_period, slow_period=slow_period, signal_period=signal_period
+                    result, column=default_column, fast_period=fast_period,
+                    slow_period=slow_period, signal_period=signal_period
                 )
 
             # Calculate Volatility indicators
             if 'BollingerBands' in volatility_settings:
-                period = volatility_settings['BollingerBands'].get('Period', 20)
-                num_std = volatility_settings['BollingerBands'].get('NumStd', 2.0)
+                period = volatility_settings['BollingerBands']['Period']
+                num_std = volatility_settings['BollingerBands']['NumStd']
                 self.logger.info(f"Calculating Bollinger Bands with period={period}, std={num_std}")
                 result = self.indicators.calculate_bollinger_bands(
-                    result, period=period, num_std=num_std
+                    result, column=default_column, period=period, num_std=num_std
                 )
 
             if 'ATR' in volatility_settings:
-                period = volatility_settings['ATR'].get('Period', 14)
+                period = volatility_settings['ATR']['Period']
                 self.logger.info(f"Calculating ATR with period={period}")
                 result = self.indicators.calculate_atr(result, period=period)
 
             # Calculate Momentum indicators
             if 'RSI' in momentum_settings:
-                period = momentum_settings['RSI'].get('Period', 14)
+                period = momentum_settings['RSI']['Period']
                 self.logger.info(f"Calculating RSI with period={period}")
-                result = self.indicators.calculate_rsi(result, period=period)
+                result = self.indicators.calculate_rsi(result, column=default_column, period=period)
 
             if 'Stochastic' in momentum_settings:
-                k_period = momentum_settings['Stochastic'].get('KPeriod', 14)
-                d_period = momentum_settings['Stochastic'].get('DPeriod', 3)
+                k_period = momentum_settings['Stochastic']['KPeriod']
+                d_period = momentum_settings['Stochastic']['DPeriod']
                 self.logger.info(f"Calculating Stochastic with k_period={k_period}, d_period={d_period}")
                 result = self.indicators.calculate_stochastic(
                     result, k_period=k_period, d_period=d_period
                 )
 
             # Calculate Pivot Points if configured
-            if pivot_settings:
-                method = pivot_settings.get('Method', 'standard')
-                self.logger.info(f"Calculating Pivot Points with method={method}")
-                result = self.indicators.calculate_pivot_points(result, method=method)
+            method = pivot_settings['Method']
+            self.logger.info(f"Calculating Pivot Points with method={method}")
+            result = self.indicators.calculate_pivot_points(result, method=method)
 
             # Log columns after adding indicators
             self.logger.info(f"Columns after adding indicators: {list(result.columns)}")
 
-            # Fallback to calculating all indicators if none were added from config
+            # Check if any indicators were added
             if len(result.columns) <= len(df.columns) + 2:  # Allow for a couple of extra columns
                 self.error_handler.handle_error(
-                    ValueError("Few or no indicators were added from config"),
+                    ValueError("Few or no indicators were added from configuration"),
                     context,
                     ErrorSeverity.HIGH,
-                    reraise=False
+                    reraise=True
                 )
-                self.logger.warning("Few or no indicators were added from config, calculating all")
-                result = self.indicators.calculate_all_indicators(result)
-                self.logger.info(f"Columns after fallback: {list(result.columns)}")
 
             return result
 
@@ -292,38 +305,22 @@ class DataProcessor:
             )
             raise
 
-    def handle_missing_values(self, df: pd.DataFrame, method: str = 'drop') -> pd.DataFrame:
+    def handle_missing_values(self, df: pd.DataFrame) -> pd.DataFrame:
         """Handle missing values in the dataframe."""
         context = {
             **self.error_context,
             "operation": "handle_missing_values",
-            "method": method,
             "df_shape": str(df.shape) if df is not None else "None"
         }
 
         try:
-            if method == 'drop':
-                original_len = len(df)
-                df = df.dropna()
-                dropped = original_len - len(df)
-                if dropped > 0:
-                    self.logger.info(f"Dropped {dropped} rows with NaN values")
-                return df
-            elif method == 'fill':
-                df = df.fillna(method='ffill')
-                # Fill any remaining NaNs (at the beginning) with zeros
-                df = df.fillna(0)
-                self.logger.info("Filled NaN values using forward fill method")
-                return df
-            else:
-                self.error_handler.handle_error(
-                    ValueError(f"Unknown missing value handling method: {method}"),
-                    context,
-                    ErrorSeverity.LOW,
-                    reraise=False
-                )
-                self.logger.warning(f"Unknown missing value handling method: {method}, using drop")
-                return df.dropna()
+            # Always drop NaN values in financial data processing
+            original_len = len(df)
+            df = df.dropna()
+            dropped = original_len - len(df)
+            if dropped > 0:
+                self.logger.info(f"Dropped {dropped} rows with NaN values")
+            return df
         except Exception as e:
             self.error_handler.handle_error(
                 exception=e,
@@ -342,17 +339,17 @@ class DataProcessor:
         }
 
         try:
-            feature_settings = self.gold_settings.get('FeatureEngineering', {})
+            feature_settings = self.gold_settings['FeatureEngineering']
             result = df.copy()
 
             # Log before feature creation
             self.logger.info(f"Starting feature engineering with columns: {list(result.columns)}")
 
             # Create price-based features
-            price_features = feature_settings.get('PriceFeatures', ['close'])
+            price_features = feature_settings['PriceFeatures']
 
             # Create lagged features
-            window_sizes = feature_settings.get('WindowSizes', [1, 3, 5])
+            window_sizes = feature_settings['WindowSizes']
             for feature in price_features:
                 if feature in result.columns:
                     # Create lag features - explicitly name these for validation
@@ -374,13 +371,15 @@ class DataProcessor:
                         self.logger.debug(f"Created percent change with window feature: {col_name}")
 
                     # Create rolling statistics
-                    col_name = f'{feature}_rolling_mean_5'
-                    result[col_name] = result[feature].rolling(window=5).mean()
-                    self.logger.debug(f"Created rolling mean feature: {col_name}")
+                    for window in window_sizes:
+                        if window > 1:  # Only create rolling stats for windows > 1
+                            col_name = f'{feature}_rolling_mean_{window}'
+                            result[col_name] = result[feature].rolling(window=window).mean()
+                            self.logger.debug(f"Created rolling mean feature: {col_name}")
 
-                    col_name = f'{feature}_rolling_std_5'
-                    result[col_name] = result[feature].rolling(window=5).std()
-                    self.logger.debug(f"Created rolling std feature: {col_name}")
+                            col_name = f'{feature}_rolling_std_{window}'
+                            result[col_name] = result[feature].rolling(window=window).std()
+                            self.logger.debug(f"Created rolling std feature: {col_name}")
 
             # Create candlestick pattern features
             result['candle_body'] = abs(result['close'] - result['open'])
@@ -411,61 +410,12 @@ class DataProcessor:
             )
             raise
 
-    def create_target_variables(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Create target variables for supervised learning."""
+    def prepare_processed_data(self, pair: str = "XAUUSD", timeframe: str = "H1",
+                               data_type: str = "training") -> pd.DataFrame:
+        """Prepare processed data with indicators and features."""
         context = {
             **self.error_context,
-            "operation": "create_target_variables",
-            "df_shape": str(df.shape) if df is not None else "None"
-        }
-
-        try:
-            ml_settings = self.gold_settings.get('MachineLearning', {})
-            targets = ml_settings.get('Targets', {})
-            result = df.copy()
-
-            # Create price prediction targets
-            if 'PricePrediction' in targets:
-                horizons = targets['PricePrediction'].get('Horizons', [1, 3, 5])
-                for horizon in horizons:
-                    result[f'future_price_{horizon}'] = result['close'].shift(-horizon)
-
-            # Create direction prediction targets
-            if 'DirectionPrediction' in targets:
-                horizons = targets['PricePrediction'].get('Horizons', [1, 3, 5])
-                threshold = targets['DirectionPrediction'].get('Threshold', 0.001)
-
-                for horizon in horizons:
-                    future_return = result['close'].pct_change(-horizon)
-
-                    # Direction: 1 for up, 0 for flat, -1 for down
-                    result[f'direction_{horizon}'] = 0
-                    result.loc[future_return > threshold, f'direction_{horizon}'] = 1
-                    result.loc[future_return < -threshold, f'direction_{horizon}'] = -1
-
-                    # Binary signal: 1 for up, 0 for not up
-                    result[f'signal_up_{horizon}'] = (result[f'direction_{horizon}'] == 1).astype(int)
-
-                    # Binary signal: 1 for down, 0 for not down
-                    result[f'signal_down_{horizon}'] = (result[f'direction_{horizon}'] == -1).astype(int)
-
-            return result
-
-        except Exception as e:
-            self.error_handler.handle_error(
-                exception=e,
-                context=context,
-                severity=ErrorSeverity.HIGH,
-                reraise=True
-            )
-            raise
-
-    def prepare_dataset(self, pair: str = "XAUUSD", timeframe: str = "H1",
-                        data_type: str = "training") -> Tuple[pd.DataFrame, pd.DataFrame]:
-        """Prepare a complete dataset for machine learning with features and targets."""
-        context = {
-            **self.error_context,
-            "operation": "prepare_dataset",
+            "operation": "prepare_processed_data",
             "pair": pair,
             "timeframe": timeframe,
             "data_type": data_type
@@ -479,9 +429,8 @@ class DataProcessor:
                     ValueError(f"Empty dataframe returned from database for {pair} {timeframe} {data_type}"),
                     context,
                     ErrorSeverity.MEDIUM,
-                    reraise=False
+                    reraise=True
                 )
-                return pd.DataFrame(), pd.DataFrame()
 
             # Verify chronological ordering
             if 'time' in df.columns:
@@ -501,7 +450,6 @@ class DataProcessor:
                     ErrorSeverity.HIGH,
                     reraise=True
                 )
-                raise ValueError("Time column missing from input data")
 
             # Add technical indicators
             df = self.process_raw_data(df)
@@ -509,73 +457,20 @@ class DataProcessor:
             # Create features
             df = self.create_features(df)
 
-            # Create target variables
-            df = self.create_target_variables(df)
-
-            # Drop NaN values from the dataset
-            time_col = None
+            # Ensure we maintain chronological order after processing
             if 'time' in df.columns:
-                time_col = df['time'].copy()
-
-            df = self.handle_missing_values(df)
-
-            # Ensure we maintain chronological order after dropping NaN values
-            if time_col is not None and 'time' in df.columns:
                 if not df['time'].equals(df['time'].sort_values()):
                     self.error_handler.handle_error(
-                        ValueError("Order changed after handling NaNs"),
+                        ValueError("Order changed after processing"),
                         context,
                         ErrorSeverity.LOW,
                         reraise=False
                     )
-                    self.logger.warning("Order changed after handling NaNs. Restoring chronological order.")
+                    self.logger.warning("Order changed after processing. Restoring chronological order.")
                     df = df.sort_values('time')
 
-            # Prepare X and y
-            ml_settings = self.gold_settings.get('MachineLearning', {})
-            targets = ml_settings.get('Targets', {})
-
-            # Determine target columns based on ML settings
-            target_columns = []
-
-            if 'PricePrediction' in targets:
-                horizons = targets['PricePrediction'].get('Horizons', [1])
-                for horizon in horizons:
-                    target_columns.append(f'future_price_{horizon}')
-
-            if 'DirectionPrediction' in targets:
-                horizons = targets['PricePrediction'].get('Horizons', [1])
-                for horizon in horizons:
-                    target_columns.append(f'direction_{horizon}')
-                    target_columns.append(f'signal_up_{horizon}')
-                    target_columns.append(f'signal_down_{horizon}')
-
-            # Remove target columns from features (but keep 'time')
-            feature_columns = [col for col in df.columns if col not in target_columns]
-
-            # Create X (features) and y (targets) dataframes
-            X = df[feature_columns]  # Keep time column in X
-            y = df[target_columns] if target_columns else pd.DataFrame()
-
-            # Final check for any NaN values
-            if 'time' in X.columns and X['time'].isna().any():
-                self.error_handler.handle_error(
-                    ValueError("Time column contains NaN values after processing"),
-                    context,
-                    ErrorSeverity.MEDIUM,
-                    reraise=False
-                )
-                self.logger.warning("Time column contains NaN values, fixing...")
-                X = X.dropna(subset=['time'])
-                if not y.empty:
-                    y = y.loc[X.index]
-
-            # Log the final column lists
-            self.logger.info(f"Feature columns: {list(X.columns)}")
-            if not y.empty:
-                self.logger.info(f"Target columns: {list(y.columns)}")
-
-            return X, y
+            self.logger.info(f"Processed data: {len(df)} rows with {len(df.columns)} columns")
+            return df
 
         except Exception as e:
             self.error_handler.handle_error(
