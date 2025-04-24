@@ -1,4 +1,3 @@
-from Fetching.ExternalMarketDataFetcher import ExternalMarketDataFetcher
 from Utilities.ConfigurationUtils import Config
 from Utilities.LoggingUtils import Logger
 from Utilities.ErrorHandler import ErrorHandler, ErrorSeverity
@@ -26,22 +25,6 @@ class FetcherFactory:
             context = {
                 **self.error_context,
                 "operation": "create_mt5_fetcher"
-            }
-            self.error_handler.handle_error(
-                exception=e,
-                context=context,
-                severity=ErrorSeverity.HIGH,
-                reraise=True
-            )
-            raise
-
-    def create_external_market_data_fetcher(self) -> ExternalMarketDataFetcher:
-        try:
-            return ExternalMarketDataFetcher(self.config, self.logger, self.error_handler)
-        except Exception as e:
-            context = {
-                **self.error_context,
-                "operation": "create_external_market_data_fetcher"
             }
             self.error_handler.handle_error(
                 exception=e,
