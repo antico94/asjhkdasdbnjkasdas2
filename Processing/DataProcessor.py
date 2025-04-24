@@ -569,37 +569,6 @@ class DataProcessor:
 
                     self.logger.info("Added USD Index correlation features to the dataset")
 
-            # Calculate VIX relationship features if available
-            if "VIX" in correlation_data:
-                vix_df = correlation_data["VIX"]
-
-                # Ensure we only work with matching timestamps
-                vix_df = vix_df[vix_df['time'].isin(result_times)]
-
-                if not vix_df.empty:
-                    # Create VIX features
-                    vix_feature_df = pd.DataFrame()
-                    vix_feature_df['time'] = vix_df['time']
-                    vix_feature_df['vix'] = vix_df['close']
-
-                    # Add VIX returns
-                    vix_feature_df['vix_returns'] = vix_df['close'].pct_change()
-
-                    # Merge with the main dataframe
-                    result = pd.merge(result, vix_feature_df, on='time', how='left')
-
-                    # Calculate correlation between Gold and VIX
-                    if 'close_pct_change' not in result.columns:
-                        result['close_pct_change'] = result['close'].pct_change()
-
-                    # Calculate rolling correlation
-                    window_sizes = [5, 10, 20]
-                    for window in window_sizes:
-                        result[f'gold_vix_corr_{window}'] = result['close_pct_change'].rolling(window).corr(
-                            result['vix_returns'])
-
-                    self.logger.info("Added VIX relationship features to the dataset")
-
             return result
 
         except Exception as e:
@@ -741,98 +710,6 @@ class DataProcessor:
                             on='time',
                             how='left'  # Use left join to keep all original rows
                         )
-
-            # Calculate VIX relationship features if available
-            if "VIX" in correlation_data:
-                vix_df = correlation_data["VIX"].copy()
-
-                if not vix_df.empty:
-                    # Check if has_real_vix flag exists, otherwise set it to 1 (for backward compatibility)
-                    if 'has_real_vix' not in vix_df.columns:
-                        vix_df['has_real_vix'] = 1
-
-                    # Calculate VIX returns
-                    vix_df['vix_returns'] = vix_df['close'].pct_change()
-
-                    # Create a dataframe with VIX features
-                    vix_feature_df = vix_df[['time', 'close', 'vix_returns', 'has_real_vix']].rename(
-                        columns={'close': 'vix'}
-                    ).dropna(subset=['vix', 'vix_returns'])  # Only drop rows where these specific columns are NA
-
-                    # Log VIX data details
-                    self.logger.info(
-                        f"VIX data: {len(vix_feature_df)} rows from {vix_feature_df['time'].min()} to {vix_feature_df['time'].max()}")
-
-                    # Count how many records have real VIX data
-                    real_vix_count = vix_feature_df['has_real_vix'].sum()
-                    total_vix_count = len(vix_feature_df)
-                    self.logger.info(
-                        f"Real VIX data: {real_vix_count} of {total_vix_count} records ({real_vix_count / total_vix_count * 100:.1f}%)")
-
-                    # Merge with main dataframe using left join
-                    result = pd.merge(
-                        result,
-                        vix_feature_df,
-                        on='time',
-                        how='left'  # Use left join to keep all original rows
-                    )
-
-                    self.logger.info(f"After VIX merge: {len(result)} rows, Nulls in VIX: {result['vix'].isna().sum()}")
-
-                    # Set has_real_vix to 0 where it's missing/null
-                    result['has_real_vix'] = result['has_real_vix'].fillna(0).astype('int64')
-
-                    # Create same direction indicator
-                    if 'close_pct_change' not in result.columns:
-                        result['close_pct_change'] = result['close'].pct_change()
-
-                    # Calculate correlation only where VIX data exists
-                    vix_exists_mask = result['vix'].notna()
-
-                    if vix_exists_mask.any():
-                        # Only compute direction for rows with VIX data
-                        result.loc[vix_exists_mask, 'gold_vix_same_direction'] = (
-                                (result.loc[vix_exists_mask, 'close_pct_change'] >= 0) &
-                                (result.loc[vix_exists_mask, 'vix_returns'] >= 0) |
-                                (result.loc[vix_exists_mask, 'close_pct_change'] < 0) &
-                                (result.loc[vix_exists_mask, 'vix_returns'] < 0)
-                        )
-
-                        # For rolling correlation, add without dropping NaN values
-                        window_sizes = [5, 10, 20]
-                        for window in window_sizes:
-                            # Create a temporary DataFrame with data only where VIX exists
-                            temp_df = pd.DataFrame({
-                                'time': result.loc[vix_exists_mask, 'time'],
-                                'gold_returns': result.loc[vix_exists_mask, 'close_pct_change'],
-                                'vix_returns': result.loc[vix_exists_mask, 'vix_returns']
-                            })
-
-                            if not temp_df.empty:
-                                # Calculate rolling correlation
-                                corr_series = temp_df['gold_returns'].rolling(window).corr(temp_df['vix_returns'])
-
-                                # Create a dataframe with time and correlation
-                                corr_df = pd.DataFrame({
-                                    'time': temp_df['time'],
-                                    f'gold_vix_corr_{window}': corr_series
-                                })
-
-                                # Merge back with the result
-                                result = pd.merge(
-                                    result,
-                                    corr_df,
-                                    on='time',
-                                    how='left'  # Use left join to keep all original rows
-                                )
-
-                    # Log VIX features after adding
-                    vix_cols = [col for col in result.columns if 'vix' in col.lower()]
-                    self.logger.info(f"Added VIX features: {vix_cols}")
-
-                    # Log the coverage of VIX data in the dataset
-                    vix_coverage = (~result['vix'].isna()).mean() * 100
-                    self.logger.info(f"VIX data coverage: {vix_coverage:.2f}% of records have VIX data")
 
             # Calculate the final number of nulls for correlation features
             null_count = sum(result[col].isna().sum() for col in result.columns if 'corr_' in col)

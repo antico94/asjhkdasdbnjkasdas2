@@ -163,44 +163,6 @@ def process_datasets(processor, storage, logger, error_handler, pair, timeframe,
             fetcher = fetcher_factory.create_mt5_fetcher()
             correlation_data = fetcher.fetch_gold_silver_data(timeframe=timeframe)
 
-            # Check if VIX data is missing and fetch from external source if needed
-            if "VIX" not in correlation_data or correlation_data["VIX"].empty:
-                print("VIX data not available from MT5, fetching from external source...")
-                vix_fetcher = fetcher_factory.create_external_vix_fetcher()
-
-                # Calculate date range based on existing data
-                if "XAUUSD" in correlation_data and not correlation_data["XAUUSD"].empty:
-                    xau_df = correlation_data["XAUUSD"]
-                    from_date = xau_df['time'].min()
-                    to_date = xau_df['time'].max()
-                    logger.info(f"Using date range from Gold data: {from_date} to {to_date}")
-                else:
-                    # Fallback to a default range
-                    from_date = datetime.now() - timedelta(days=2001)  # Use default from config
-                    to_date = datetime.now()
-                    logger.info(f"Using default date range: {from_date} to {to_date}")
-
-                # Fetch VIX data (will automatically limit to last 730 days)
-                vix_df = vix_fetcher.fetch_vix_data(from_date, to_date, timeframe)
-
-                if not vix_df.empty:
-                    # Add VIX data to correlation data
-                    correlation_data["VIX"] = vix_df
-
-                    # Save VIX data to database
-                    vix_fetcher.save_vix_data(vix_df, timeframe)
-                    print(f"✓ Successfully saved {len(vix_df)} rows of VIX data from external source")
-
-                    # Calculate coverage
-                    if "XAUUSD" in correlation_data and not correlation_data["XAUUSD"].empty:
-                        xau_count = len(correlation_data["XAUUSD"])
-                        vix_count = len(vix_df)
-                        coverage = (vix_count / xau_count) * 100
-                        print(f"VIX data covers {coverage:.1f}% of your Gold data timespan")
-                        logger.info(f"VIX coverage: {vix_count}/{xau_count} records ({coverage:.1f}%)")
-                else:
-                    print("✗ Failed to fetch VIX data from external source")
-
             if not correlation_data:
                 logger.warning("No correlation data available for gold-specific features")
                 print("No correlation data available. Processing will continue with standard features only.")
@@ -268,7 +230,7 @@ def process_datasets(processor, storage, logger, error_handler, pair, timeframe,
 
                     # Load correlation data from database
                     corr_data_dict = {}
-                    for symbol in ["XAUUSD", "XAGUSD", "USDX", "VIX"]:
+                    for symbol in ["XAUUSD", "XAGUSD", "USDX"]:
                         corr_df = gold_corr_fetcher.load_correlation_data(symbol, timeframe)
                         if not corr_df.empty:
                             corr_data_dict[symbol] = corr_df
@@ -290,21 +252,12 @@ def process_datasets(processor, storage, logger, error_handler, pair, timeframe,
                             hour_counts = df['time'].dt.hour.value_counts().sort_index()
                             logger.info(f"{symbol} correlation hour distribution: {hour_counts.to_dict()}")
 
-                            # For VIX, also log the real data vs. total coverage
-                            if symbol == "VIX" and "has_real_vix" in df.columns:
-                                real_vix_count = df['has_real_vix'].sum()
-                                total_vix_count = len(df)
-                                real_percent = (real_vix_count / total_vix_count * 100) if total_vix_count > 0 else 0
-                                logger.info(
-                                    f"Real VIX data: {real_vix_count} of {total_vix_count} records ({real_percent:.1f}%)")
-                                print(f"Real hourly VIX data available for {real_percent:.1f}% of records")
-
                         # Use the new method that doesn't drop rows with missing correlation data
                         processed_data = processor.add_gold_features(processed_data, corr_data_dict)
 
                         # Log which correlation features were added
                         corr_cols = [col for col in processed_data.columns if
-                                     any(s in col.lower() for s in ['vix', 'gold_silver', 'usd'])]
+                                     any(s in col.lower() for s in ['gold_silver', 'usd'])]
                         logger.info(f"Added correlation features: {corr_cols}")
                 except Exception as e:
                     logger.error(f"Failed to add gold-specific features: {e}")

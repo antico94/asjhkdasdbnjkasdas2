@@ -112,36 +112,6 @@ class ExternalMarketDataFetcher:
             )
             raise
 
-    def fetch_vix(self, start_date: datetime, end_date: datetime) -> pd.DataFrame:
-        """Fetch VIX (market volatility) data"""
-        context = {
-            **self.error_context,
-            "operation": "fetch_vix",
-            "start_date": start_date.isoformat(),
-            "end_date": end_date.isoformat()
-        }
-
-        try:
-            self.logger.info(f"Fetching VIX from {start_date} to {end_date}")
-
-            # Implementation will depend on your data source
-
-            self.error_handler.handle_error(
-                NotImplementedError("VIX fetching not implemented"),
-                context,
-                ErrorSeverity.HIGH,
-                reraise=True
-            )
-
-        except Exception as e:
-            self.error_handler.handle_error(
-                exception=e,
-                context=context,
-                severity=ErrorSeverity.HIGH,
-                reraise=True
-            )
-            raise
-
     def store_external_data(self, data_type: str, df: pd.DataFrame) -> bool:
         """Store external market data in database"""
         context = {
@@ -170,7 +140,7 @@ class ExternalMarketDataFetcher:
             # Define table structure based on data type
             if data_type == "GoldSilverRatio":
                 self._create_ratio_table(table_name)
-            elif data_type in ["USDIndex", "VIX"]:
+            elif data_type in ["USDIndex"]:
                 self._create_index_table(table_name)
             else:
                 self.error_handler.handle_error(

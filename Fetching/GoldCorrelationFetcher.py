@@ -118,21 +118,21 @@ class GoldCorrelationFetcher:
         }
 
         try:
-            price_data_table = Table(
-                table_name,
-                self.metadata,
-                Column("time", DateTime, primary_key=True),
-                Column("open", Float, nullable=False),
-                Column("high", Float, nullable=False),
-                Column("low", Float, nullable=False),
-                Column("close", Float, nullable=False),
-                Column("tick_volume", Integer, nullable=False),
-                Column("spread", Integer, nullable=False),
-                Column("real_volume", Integer, nullable=True)
-            )
-
-            # Create the table
-            self.metadata.create_all(self.engine, tables=[price_data_table])
+            # Create the table - using square brackets around reserved keywords
+            with self.engine.connect() as conn:
+                conn.execute(text(f"""
+                CREATE TABLE {table_name} (
+                    [time] DATETIME PRIMARY KEY,
+                    [open] FLOAT NOT NULL,
+                    [high] FLOAT NOT NULL,
+                    [low] FLOAT NOT NULL,
+                    [close] FLOAT NOT NULL,
+                    [tick_volume] INT NOT NULL,
+                    [spread] INT NOT NULL,
+                    [real_volume] INT NULL
+                )
+                """))
+                conn.commit()
 
         except Exception as e:
             self.error_handler.handle_error(

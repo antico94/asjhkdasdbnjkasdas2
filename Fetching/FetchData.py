@@ -501,7 +501,7 @@ class MT5DataFetcher:
             results = {}
 
             # List of correlation symbols to fetch
-            correlation_symbols = ["XAUUSD", "XAGUSD", "USDX", "VIX"]
+            correlation_symbols = ["XAUUSD", "XAGUSD", "USDX"]
 
             # Fetch data for each symbol
             for symbol in correlation_symbols:
