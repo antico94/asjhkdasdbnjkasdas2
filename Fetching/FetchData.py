@@ -500,73 +500,48 @@ class MT5DataFetcher:
 
             results = {}
 
-            # Fetch Gold data
-            self.logger.info(f"Fetching XAUUSD from {from_date} to {to_date}")
-            print(f"Downloading XAUUSD data...")
-            gold_rates = mt5.copy_rates_range("XAUUSD", mt5_timeframe, from_date, to_date)
+            # List of correlation symbols to fetch
+            correlation_symbols = ["XAUUSD", "XAGUSD", "USDX", "VIX"]
 
-            if gold_rates is None or len(gold_rates) == 0:
-                self.error_handler.handle_error(
-                    ValueError("No Gold data received from MT5"),
-                    context,
-                    ErrorSeverity.MEDIUM,
-                    reraise=False
-                )
-            else:
-                # Convert to DataFrame
-                gold_df = pd.DataFrame(gold_rates)
-                gold_df['time'] = pd.to_datetime(gold_df['time'], unit='s')
-                gold_df = gold_df.sort_values('time')
-                results["XAUUSD"] = gold_df
+            # Fetch data for each symbol
+            for symbol in correlation_symbols:
+                try:
+                    self.logger.info(f"Fetching {symbol} from {from_date} to {to_date}")
+                    print(f"Downloading {symbol} data...")
 
-            # Fetch Silver data
-            self.logger.info(f"Fetching XAGUSD from {from_date} to {to_date}")
-            print(f"Downloading XAGUSD data...")
-            silver_rates = mt5.copy_rates_range("XAGUSD", mt5_timeframe, from_date, to_date)
+                    rates = mt5.copy_rates_range(symbol, mt5_timeframe, from_date, to_date)
 
-            if silver_rates is None or len(silver_rates) == 0:
-                self.error_handler.handle_error(
-                    ValueError("No Silver data received from MT5"),
-                    context,
-                    ErrorSeverity.MEDIUM,
-                    reraise=False
-                )
-            else:
-                # Convert to DataFrame
-                silver_df = pd.DataFrame(silver_rates)
-                silver_df['time'] = pd.to_datetime(silver_df['time'], unit='s')
-                silver_df = silver_df.sort_values('time')
-                results["XAGUSD"] = silver_df
+                    if rates is None or len(rates) == 0:
+                        self.logger.warning(f"No data received for {symbol}")
+                        print(f"No data available for {symbol}")
+                        continue
 
-            # Try to fetch USD Index if available in your broker (often as DXY or USDX)
-            try:
-                self.logger.info(f"Fetching USD Index from {from_date} to {to_date}")
-                print(f"Downloading USD Index data...")
-                usd_rates = mt5.copy_rates_range("USDX", mt5_timeframe, from_date, to_date)
+                    # Convert to DataFrame
+                    df = pd.DataFrame(rates)
+                    df['time'] = pd.to_datetime(df['time'], unit='s')
 
-                if usd_rates is not None and len(usd_rates) > 0:
-                    usd_df = pd.DataFrame(usd_rates)
-                    usd_df['time'] = pd.to_datetime(usd_df['time'], unit='s')
-                    usd_df = usd_df.sort_values('time')
-                    results["USDX"] = usd_df
-            except Exception as e:
-                self.logger.warning(f"Failed to fetch USD Index: {e}")
-                print("USD Index not available or failed to fetch")
+                    # Explicitly cast potential unsigned integer columns to signed int64
+                    if 'tick_volume' in df.columns:
+                        df['tick_volume'] = df['tick_volume'].astype('int64')
+                    if 'spread' in df.columns:
+                        df['spread'] = df['spread'].astype('int64')
+                    if 'real_volume' in df.columns:
+                        df['real_volume'] = df['real_volume'].astype('Int64')  # nullable integer
 
-            # Try to fetch VIX if available in your broker
-            try:
-                self.logger.info(f"Fetching VIX from {from_date} to {to_date}")
-                print(f"Downloading VIX data...")
-                vix_rates = mt5.copy_rates_range("VIX", mt5_timeframe, from_date, to_date)
+                    # Sort by time ascending
+                    df = df.sort_values('time')
 
-                if vix_rates is not None and len(vix_rates) > 0:
-                    vix_df = pd.DataFrame(vix_rates)
-                    vix_df['time'] = pd.to_datetime(vix_df['time'], unit='s')
-                    vix_df = vix_df.sort_values('time')
-                    results["VIX"] = vix_df
-            except Exception as e:
-                self.logger.warning(f"Failed to fetch VIX: {e}")
-                print("VIX not available or failed to fetch")
+                    # Log detailed timestamp information to debug the issue
+                    self.logger.info(f"{symbol} data: {len(df)} rows from {df['time'].min()} to {df['time'].max()}")
+                    hour_counts = df['time'].dt.hour.value_counts().sort_index()
+                    self.logger.info(f"{symbol} hour distribution: {hour_counts.to_dict()}")
+
+                    results[symbol] = df
+
+                except Exception as e:
+                    self.logger.error(f"Failed to fetch {symbol}: {str(e)}")
+                    print(f"Error fetching {symbol}: {str(e)}")
+                    # Continue with other symbols
 
             return results
 

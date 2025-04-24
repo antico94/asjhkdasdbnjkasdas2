@@ -150,57 +150,6 @@ class DataProcessor:
             )
             raise
 
-    def process_raw_data(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Process raw data with technical indicators."""
-        context = {
-            **self.error_context,
-            "operation": "process_raw_data",
-            "df_shape": str(df.shape) if df is not None else "None"
-        }
-
-        try:
-            if df.empty:
-                self.error_handler.handle_error(
-                    ValueError("Empty dataframe provided for processing"),
-                    context,
-                    ErrorSeverity.MEDIUM,
-                    reraise=True
-                )
-
-            self.logger.info(f"Processing {len(df)} rows of raw data")
-
-            # Make sure we have a proper copy to avoid modifying the original
-            processed_df = df.copy()
-
-            # Ensure time column is present and properly formatted
-            if 'time' not in processed_df.columns:
-                self.error_handler.handle_error(
-                    ValueError("Time column missing from input data"),
-                    context,
-                    ErrorSeverity.HIGH,
-                    reraise=True
-                )
-
-            processed_df['time'] = pd.to_datetime(processed_df['time'])
-
-            # Calculate all technical indicators based on configuration
-            processed_df = self.calculate_indicators(processed_df)
-
-            # Remove NaN values that come from indicators using windows
-            processed_df = self.handle_missing_values(processed_df)
-
-            self.logger.info(f"Data processing complete with {len(processed_df)} rows remaining")
-            return processed_df
-
-        except Exception as e:
-            self.error_handler.handle_error(
-                exception=e,
-                context=context,
-                severity=ErrorSeverity.HIGH,
-                reraise=True
-            )
-            raise
-
     def calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
         """Calculate all technical indicators based on configuration."""
         context = {
@@ -481,7 +430,61 @@ class DataProcessor:
             )
             raise
 
-    # Add to Processing/DataProcessor.py
+    def process_raw_data(self, df: pd.DataFrame,
+                         correlation_data: Optional[Dict[str, pd.DataFrame]] = None) -> pd.DataFrame:
+        """Process raw data with technical indicators."""
+        context = {
+            **self.error_context,
+            "operation": "process_raw_data",
+            "df_shape": str(df.shape) if df is not None else "None",
+            "has_correlation_data": correlation_data is not None
+        }
+
+        try:
+            if df.empty:
+                self.error_handler.handle_error(
+                    ValueError("Empty dataframe provided for processing"),
+                    context,
+                    ErrorSeverity.MEDIUM,
+                    reraise=True
+                )
+
+            self.logger.info(f"Processing {len(df)} rows of raw data")
+
+            # Make sure we have a proper copy to avoid modifying the original
+            processed_df = df.copy()
+
+            # Ensure time column is present and properly formatted
+            if 'time' not in processed_df.columns:
+                self.error_handler.handle_error(
+                    ValueError("Time column missing from input data"),
+                    context,
+                    ErrorSeverity.HIGH,
+                    reraise=True
+                )
+
+            processed_df['time'] = pd.to_datetime(processed_df['time'])
+
+            # Calculate all technical indicators based on configuration
+            processed_df = self.calculate_indicators(processed_df)
+
+            # Note: We no longer add gold-specific features here
+            # They will be added separately after storing correlation data
+
+            # Remove NaN values that come from indicators using windows
+            processed_df = self.handle_missing_values(processed_df)
+
+            self.logger.info(f"Data processing complete with {len(processed_df)} rows remaining")
+            return processed_df
+
+        except Exception as e:
+            self.error_handler.handle_error(
+                exception=e,
+                context=context,
+                severity=ErrorSeverity.HIGH,
+                reraise=True
+            )
+            raise
 
     def calculate_gold_specific_features(self, df: pd.DataFrame,
                                          correlation_data: Dict[str, pd.DataFrame]) -> pd.DataFrame:
@@ -608,54 +611,238 @@ class DataProcessor:
             )
             raise
 
-    def process_raw_data(self, df: pd.DataFrame,
-                         correlation_data: Optional[Dict[str, pd.DataFrame]] = None) -> pd.DataFrame:
-        """Process raw data with technical indicators and gold-specific features."""
+    def add_gold_features(self, df: pd.DataFrame,
+                          correlation_data: Dict[str, pd.DataFrame]) -> pd.DataFrame:
+        """Add gold-specific features using correlation data loaded from tables.
+
+        This method adds gold-specific features without dropping rows that don't
+        have correlation data.
+        """
         context = {
             **self.error_context,
-            "operation": "process_raw_data",
+            "operation": "add_gold_features",
             "df_shape": str(df.shape) if df is not None else "None",
-            "has_correlation_data": correlation_data is not None
+            "available_corr_data": str(list(correlation_data.keys()))
         }
 
         try:
-            if df.empty:
-                self.error_handler.handle_error(
-                    ValueError("Empty dataframe provided for processing"),
-                    context,
-                    ErrorSeverity.MEDIUM,
-                    reraise=True
-                )
+            result = df.copy()
 
-            self.logger.info(f"Processing {len(df)} rows of raw data")
+            # Calculate CCI if not already present
+            if 'cci' not in result.columns:
+                result = self.indicators.calculate_cci(result, period=20)
+                self.logger.info("Added CCI indicator to the dataset")
 
-            # Make sure we have a proper copy to avoid modifying the original
-            processed_df = df.copy()
+            # Log original data time range
+            self.logger.info(f"Original data: {len(result)} rows from {result['time'].min()} to {result['time'].max()}")
 
-            # Ensure time column is present and properly formatted
-            if 'time' not in processed_df.columns:
-                self.error_handler.handle_error(
-                    ValueError("Time column missing from input data"),
-                    context,
-                    ErrorSeverity.HIGH,
-                    reraise=True
-                )
+            # Calculate Gold/Silver ratio if both are available
+            if "XAUUSD" in correlation_data and "XAGUSD" in correlation_data:
+                gold_df = correlation_data["XAUUSD"].copy()
+                silver_df = correlation_data["XAGUSD"].copy()
 
-            processed_df['time'] = pd.to_datetime(processed_df['time'])
+                # Log correlation data details
+                self.logger.info(
+                    f"Gold data: {len(gold_df)} rows from {gold_df['time'].min()} to {gold_df['time'].max()}")
+                self.logger.info(
+                    f"Silver data: {len(silver_df)} rows from {silver_df['time'].min()} to {silver_df['time'].max()}")
 
-            # Calculate all technical indicators based on configuration
-            processed_df = self.calculate_indicators(processed_df)
+                # Calculate Gold/Silver ratio
+                if not gold_df.empty and not silver_df.empty:
+                    # Create a temporary dataframe with both gold and silver data
+                    ratio_df = pd.merge(
+                        gold_df[['time', 'close']].rename(columns={'close': 'gold_close'}),
+                        silver_df[['time', 'close']].rename(columns={'close': 'silver_close'}),
+                        on='time',
+                        how='inner'  # Only use timestamps that exist in both datasets
+                    )
 
-            # Add gold-specific features if correlation data is available
-            if correlation_data:
-                processed_df = self.calculate_gold_specific_features(processed_df, correlation_data)
-                self.logger.info("Added gold-specific features to the dataset")
+                    # Calculate the ratio
+                    ratio_df['gold_silver_ratio'] = ratio_df['gold_close'] / ratio_df['silver_close']
 
-            # Remove NaN values that come from indicators using windows
-            processed_df = self.handle_missing_values(processed_df)
+                    # Log ratio data details
+                    self.logger.info(
+                        f"Ratio data: {len(ratio_df)} rows from {ratio_df['time'].min()} to {ratio_df['time'].max()}")
 
-            self.logger.info(f"Data processing complete with {len(processed_df)} rows remaining")
-            return processed_df
+                    # Merge with main dataframe using left join to avoid losing data
+                    result = pd.merge(
+                        result,
+                        ratio_df[['time', 'gold_silver_ratio']],
+                        on='time',
+                        how='left'  # Use left join to keep all original rows
+                    )
+
+                    self.logger.info(
+                        f"After ratio merge: {len(result)} rows, Nulls in ratio: {result['gold_silver_ratio'].isna().sum()}")
+
+            # Calculate USD Index correlation if available
+            if "USDX" in correlation_data:
+                usd_df = correlation_data["USDX"].copy()
+
+                if not usd_df.empty:
+                    # Calculate USD returns
+                    usd_df['usd_returns'] = usd_df['close'].pct_change()
+
+                    # Create a dataframe with USD features
+                    usd_feature_df = usd_df[['time', 'close', 'usd_returns']].rename(
+                        columns={'close': 'usd_index'}
+                    ).dropna()
+
+                    # Log USD data details
+                    self.logger.info(
+                        f"USD data: {len(usd_feature_df)} rows from {usd_feature_df['time'].min()} to {usd_feature_df['time'].max()}")
+
+                    # Merge with main dataframe using left join
+                    result = pd.merge(
+                        result,
+                        usd_feature_df,
+                        on='time',
+                        how='left'  # Use left join to keep all original rows
+                    )
+
+                    self.logger.info(
+                        f"After USD merge: {len(result)} rows, Nulls in USD index: {result['usd_index'].isna().sum()}")
+
+                    # Calculate correlation between Gold and USD returns
+                    # First we need close returns for gold if not already present
+                    if 'close_pct_change' not in result.columns:
+                        result['close_pct_change'] = result['close'].pct_change()
+
+                    # Instead of rolling correlation which would drop rows,
+                    # we'll create a feature that indicates if gold and USD are moving in the same direction
+                    result['gold_usd_same_direction'] = (
+                            (result['close_pct_change'] >= 0) & (result['usd_returns'] >= 0) |
+                            (result['close_pct_change'] < 0) & (result['usd_returns'] < 0)
+                    )
+
+                    # For rolling correlation, we'll add it but not drop rows with NaN
+                    window_sizes = [5, 10, 20]
+                    for window in window_sizes:
+                        # Use a separate DataFrame for correlation calculation to avoid affecting the main result
+                        corr_df = pd.DataFrame({
+                            'time': result['time'],
+                            'gold_returns': result['close_pct_change'],
+                            'usd_returns': result['usd_returns']
+                        })
+
+                        # Calculate rolling correlation
+                        corr_series = corr_df['gold_returns'].rolling(window).corr(corr_df['usd_returns'])
+
+                        # Create a temporary dataframe with time and correlation
+                        temp_df = pd.DataFrame({
+                            'time': corr_df['time'],
+                            f'gold_usd_corr_{window}': corr_series
+                        })
+
+                        # Merge back with the result
+                        result = pd.merge(
+                            result,
+                            temp_df,
+                            on='time',
+                            how='left'  # Use left join to keep all original rows
+                        )
+
+            # Calculate VIX relationship features if available
+            if "VIX" in correlation_data:
+                vix_df = correlation_data["VIX"].copy()
+
+                if not vix_df.empty:
+                    # Check if has_real_vix flag exists, otherwise set it to 1 (for backward compatibility)
+                    if 'has_real_vix' not in vix_df.columns:
+                        vix_df['has_real_vix'] = 1
+
+                    # Calculate VIX returns
+                    vix_df['vix_returns'] = vix_df['close'].pct_change()
+
+                    # Create a dataframe with VIX features
+                    vix_feature_df = vix_df[['time', 'close', 'vix_returns', 'has_real_vix']].rename(
+                        columns={'close': 'vix'}
+                    ).dropna(subset=['vix', 'vix_returns'])  # Only drop rows where these specific columns are NA
+
+                    # Log VIX data details
+                    self.logger.info(
+                        f"VIX data: {len(vix_feature_df)} rows from {vix_feature_df['time'].min()} to {vix_feature_df['time'].max()}")
+
+                    # Count how many records have real VIX data
+                    real_vix_count = vix_feature_df['has_real_vix'].sum()
+                    total_vix_count = len(vix_feature_df)
+                    self.logger.info(
+                        f"Real VIX data: {real_vix_count} of {total_vix_count} records ({real_vix_count / total_vix_count * 100:.1f}%)")
+
+                    # Merge with main dataframe using left join
+                    result = pd.merge(
+                        result,
+                        vix_feature_df,
+                        on='time',
+                        how='left'  # Use left join to keep all original rows
+                    )
+
+                    self.logger.info(f"After VIX merge: {len(result)} rows, Nulls in VIX: {result['vix'].isna().sum()}")
+
+                    # Set has_real_vix to 0 where it's missing/null
+                    result['has_real_vix'] = result['has_real_vix'].fillna(0).astype('int64')
+
+                    # Create same direction indicator
+                    if 'close_pct_change' not in result.columns:
+                        result['close_pct_change'] = result['close'].pct_change()
+
+                    # Calculate correlation only where VIX data exists
+                    vix_exists_mask = result['vix'].notna()
+
+                    if vix_exists_mask.any():
+                        # Only compute direction for rows with VIX data
+                        result.loc[vix_exists_mask, 'gold_vix_same_direction'] = (
+                                (result.loc[vix_exists_mask, 'close_pct_change'] >= 0) &
+                                (result.loc[vix_exists_mask, 'vix_returns'] >= 0) |
+                                (result.loc[vix_exists_mask, 'close_pct_change'] < 0) &
+                                (result.loc[vix_exists_mask, 'vix_returns'] < 0)
+                        )
+
+                        # For rolling correlation, add without dropping NaN values
+                        window_sizes = [5, 10, 20]
+                        for window in window_sizes:
+                            # Create a temporary DataFrame with data only where VIX exists
+                            temp_df = pd.DataFrame({
+                                'time': result.loc[vix_exists_mask, 'time'],
+                                'gold_returns': result.loc[vix_exists_mask, 'close_pct_change'],
+                                'vix_returns': result.loc[vix_exists_mask, 'vix_returns']
+                            })
+
+                            if not temp_df.empty:
+                                # Calculate rolling correlation
+                                corr_series = temp_df['gold_returns'].rolling(window).corr(temp_df['vix_returns'])
+
+                                # Create a dataframe with time and correlation
+                                corr_df = pd.DataFrame({
+                                    'time': temp_df['time'],
+                                    f'gold_vix_corr_{window}': corr_series
+                                })
+
+                                # Merge back with the result
+                                result = pd.merge(
+                                    result,
+                                    corr_df,
+                                    on='time',
+                                    how='left'  # Use left join to keep all original rows
+                                )
+
+                    # Log VIX features after adding
+                    vix_cols = [col for col in result.columns if 'vix' in col.lower()]
+                    self.logger.info(f"Added VIX features: {vix_cols}")
+
+                    # Log the coverage of VIX data in the dataset
+                    vix_coverage = (~result['vix'].isna()).mean() * 100
+                    self.logger.info(f"VIX data coverage: {vix_coverage:.2f}% of records have VIX data")
+
+            # Calculate the final number of nulls for correlation features
+            null_count = sum(result[col].isna().sum() for col in result.columns if 'corr_' in col)
+            self.logger.info(f"Total null values in correlation features: {null_count}")
+
+            # Log the final dataset shape
+            self.logger.info(
+                f"Final dataset after adding gold features: {len(result)} rows with {len(result.columns)} columns")
+
+            return result
 
         except Exception as e:
             self.error_handler.handle_error(

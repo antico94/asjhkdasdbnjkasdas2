@@ -3,6 +3,7 @@ from Utilities.ConfigurationUtils import Config
 from Utilities.LoggingUtils import Logger
 from Utilities.ErrorHandler import ErrorHandler, ErrorSeverity
 from Fetching.FetchData import MT5DataFetcher
+from Fetching.ExternalVIXFetcher import ExternalVIXFetcher
 from typing import Dict, Any
 
 
@@ -42,6 +43,23 @@ class FetcherFactory:
             context = {
                 **self.error_context,
                 "operation": "create_external_market_data_fetcher"
+            }
+            self.error_handler.handle_error(
+                exception=e,
+                context=context,
+                severity=ErrorSeverity.HIGH,
+                reraise=True
+            )
+            raise
+
+    def create_external_vix_fetcher(self) -> ExternalVIXFetcher:
+        """Create an external VIX data fetcher."""
+        try:
+            return ExternalVIXFetcher(self.config, self.logger, self.error_handler)
+        except Exception as e:
+            context = {
+                **self.error_context,
+                "operation": "create_external_vix_fetcher"
             }
             self.error_handler.handle_error(
                 exception=e,

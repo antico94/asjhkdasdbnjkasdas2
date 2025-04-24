@@ -1,3 +1,6 @@
+from datetime import datetime, timedelta
+
+from Fetching.GoldCorrelationFetcher import GoldCorrelationFetcher
 from Utilities.LoggingUtils import Logger
 from Utilities.ErrorHandler import ErrorHandler, ErrorSeverity
 from Fetching.FetcherFactory import FetcherFactory
@@ -139,8 +142,8 @@ def handle_process_data(cli: TradingBotCLI,
         print("An error occurred during data processing. Returning to main menu.")
 
 
-
-def process_datasets(processor, storage, logger, error_handler, pair, timeframe, dataset_types, fetcher_factory: FetcherFactory):
+def process_datasets(processor, storage, logger, error_handler, pair, timeframe, dataset_types,
+                     fetcher_factory: FetcherFactory):
     """Process multiple datasets and save to database"""
     context = {
         "function": "process_datasets",
@@ -155,8 +158,48 @@ def process_datasets(processor, storage, logger, error_handler, pair, timeframe,
     if pair == "XAUUSD":
         try:
             print("Fetching correlation data for gold-specific features...")
+
+            # First try to get data from MT5
             fetcher = fetcher_factory.create_mt5_fetcher()
             correlation_data = fetcher.fetch_gold_silver_data(timeframe=timeframe)
+
+            # Check if VIX data is missing and fetch from external source if needed
+            if "VIX" not in correlation_data or correlation_data["VIX"].empty:
+                print("VIX data not available from MT5, fetching from external source...")
+                vix_fetcher = fetcher_factory.create_external_vix_fetcher()
+
+                # Calculate date range based on existing data
+                if "XAUUSD" in correlation_data and not correlation_data["XAUUSD"].empty:
+                    xau_df = correlation_data["XAUUSD"]
+                    from_date = xau_df['time'].min()
+                    to_date = xau_df['time'].max()
+                    logger.info(f"Using date range from Gold data: {from_date} to {to_date}")
+                else:
+                    # Fallback to a default range
+                    from_date = datetime.now() - timedelta(days=2001)  # Use default from config
+                    to_date = datetime.now()
+                    logger.info(f"Using default date range: {from_date} to {to_date}")
+
+                # Fetch VIX data (will automatically limit to last 730 days)
+                vix_df = vix_fetcher.fetch_vix_data(from_date, to_date, timeframe)
+
+                if not vix_df.empty:
+                    # Add VIX data to correlation data
+                    correlation_data["VIX"] = vix_df
+
+                    # Save VIX data to database
+                    vix_fetcher.save_vix_data(vix_df, timeframe)
+                    print(f"✓ Successfully saved {len(vix_df)} rows of VIX data from external source")
+
+                    # Calculate coverage
+                    if "XAUUSD" in correlation_data and not correlation_data["XAUUSD"].empty:
+                        xau_count = len(correlation_data["XAUUSD"])
+                        vix_count = len(vix_df)
+                        coverage = (vix_count / xau_count) * 100
+                        print(f"VIX data covers {coverage:.1f}% of your Gold data timespan")
+                        logger.info(f"VIX coverage: {vix_count}/{xau_count} records ({coverage:.1f}%)")
+                else:
+                    print("✗ Failed to fetch VIX data from external source")
 
             if not correlation_data:
                 logger.warning("No correlation data available for gold-specific features")
@@ -164,9 +207,31 @@ def process_datasets(processor, storage, logger, error_handler, pair, timeframe,
             else:
                 logger.info(f"Fetched correlation data: {list(correlation_data.keys())}")
                 print(f"Successfully fetched correlation data for: {', '.join(correlation_data.keys())}")
+
+                # Save correlation data to separate tables
+                gold_corr_fetcher = GoldCorrelationFetcher(processor.config, logger, error_handler)
+
+                for symbol, df in correlation_data.items():
+                    print(f"Saving correlation data for {symbol}...")
+                    success = gold_corr_fetcher.save_correlation_data(symbol, timeframe, df)
+
+                    if success:
+                        print(f"✓ Successfully saved {len(df)} rows of {symbol} correlation data")
+
+                        # Log timestamp distribution to debug the issue
+                        hour_counts = df['time'].dt.hour.value_counts().sort_index()
+                        logger.info(f"{symbol} hour distribution: {hour_counts.to_dict()}")
+
+                        # Log min/max dates
+                        min_date = df['time'].min()
+                        max_date = df['time'].max()
+                        logger.info(f"{symbol} data range: {min_date} to {max_date}")
+                    else:
+                        print(f"✗ Failed to save {symbol} correlation data")
         except Exception as e:
-            logger.warning(f"Failed to fetch correlation data: {e}")
-            print("Failed to fetch correlation data. Processing will continue with standard features only.")
+            logger.error(f"Failed to fetch/save correlation data: {e}")
+            print(f"Failed to fetch correlation data: {str(e)}")
+            print("Processing will continue with standard features only.")
 
     for dataset_type in dataset_types:
         context["dataset_type"] = dataset_type
@@ -182,15 +247,76 @@ def process_datasets(processor, storage, logger, error_handler, pair, timeframe,
                 print(f"✗ No data found for {dataset_type}")
                 continue
 
-            # Process the data with gold-specific features if applicable
-            processed_data = processor.process_raw_data(raw_data, correlation_data if pair == "XAUUSD" else None)
+            # Log raw data timestamp distribution and date range
+            min_date = raw_data['time'].min()
+            max_date = raw_data['time'].max()
+            logger.info(f"Raw data range: {min_date} to {max_date} ({(max_date - min_date).days} days)")
+            hour_counts = raw_data['time'].dt.hour.value_counts().sort_index()
+            logger.info(f"Raw data hour distribution: {hour_counts.to_dict()}")
+
+            # Process the data with standard technical indicators
+            processed_data = processor.process_raw_data(raw_data)
 
             # Create features
             processed_data = processor.create_features(processed_data)
 
+            # If processing gold, load correlation data from tables and add gold-specific features
+            if pair == "XAUUSD":
+                try:
+                    print("Loading correlation data from database...")
+                    gold_corr_fetcher = GoldCorrelationFetcher(processor.config, logger, error_handler)
+
+                    # Load correlation data from database
+                    corr_data_dict = {}
+                    for symbol in ["XAUUSD", "XAGUSD", "USDX", "VIX"]:
+                        corr_df = gold_corr_fetcher.load_correlation_data(symbol, timeframe)
+                        if not corr_df.empty:
+                            corr_data_dict[symbol] = corr_df
+                            print(f"✓ Loaded {len(corr_df)} rows of {symbol} correlation data")
+
+                            # Log data range
+                            min_date = corr_df['time'].min()
+                            max_date = corr_df['time'].max()
+                            logger.info(
+                                f"{symbol} correlation data range: {min_date} to {max_date} ({(max_date - min_date).days} days)")
+                        else:
+                            print(f"✗ No {symbol} correlation data found")
+
+                    # Calculate gold-specific features if correlation data exists
+                    if corr_data_dict:
+                        print("Calculating gold-specific features...")
+                        # Log correlation data timestamp distribution
+                        for symbol, df in corr_data_dict.items():
+                            hour_counts = df['time'].dt.hour.value_counts().sort_index()
+                            logger.info(f"{symbol} correlation hour distribution: {hour_counts.to_dict()}")
+
+                            # For VIX, also log the real data vs. total coverage
+                            if symbol == "VIX" and "has_real_vix" in df.columns:
+                                real_vix_count = df['has_real_vix'].sum()
+                                total_vix_count = len(df)
+                                real_percent = (real_vix_count / total_vix_count * 100) if total_vix_count > 0 else 0
+                                logger.info(
+                                    f"Real VIX data: {real_vix_count} of {total_vix_count} records ({real_percent:.1f}%)")
+                                print(f"Real hourly VIX data available for {real_percent:.1f}% of records")
+
+                        # Use the new method that doesn't drop rows with missing correlation data
+                        processed_data = processor.add_gold_features(processed_data, corr_data_dict)
+
+                        # Log which correlation features were added
+                        corr_cols = [col for col in processed_data.columns if
+                                     any(s in col.lower() for s in ['vix', 'gold_silver', 'usd'])]
+                        logger.info(f"Added correlation features: {corr_cols}")
+                except Exception as e:
+                    logger.error(f"Failed to add gold-specific features: {e}")
+                    print(f"✗ Error adding gold-specific features: {str(e)}")
+
             # Log information about the processed data
             logger.info(f"Processed {len(processed_data)} rows for {pair} {timeframe} {dataset_type}")
             logger.info(f"Features: {list(processed_data.columns)}")
+
+            # Log processed data timestamp distribution
+            hour_counts = processed_data['time'].dt.hour.value_counts().sort_index()
+            logger.info(f"Processed data hour distribution: {hour_counts.to_dict()}")
 
             # Create dummy empty DataFrame for y to maintain compatibility with storage function
             dummy_y = pd.DataFrame()
