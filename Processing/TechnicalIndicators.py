@@ -1,4 +1,6 @@
 from typing import List, Dict, Any, Optional
+
+import numpy as np
 import pandas as pd
 from Utilities.ErrorHandler import ErrorHandler, ErrorSeverity
 
@@ -175,7 +177,7 @@ class TechnicalIndicators:
                     )
                 raise ValueError(f"Column '{column}' not found in dataframe")
 
-            if period <= 0:
+            if period is None or not isinstance(period, int) or period <= 0:
                 if self.error_handler:
                     self.error_handler.handle_error(
                         ValueError(f"Period ({period}) must be a positive integer"),
@@ -191,26 +193,30 @@ class TechnicalIndicators:
             gain = delta.where(delta > 0, 0)
             loss = -delta.where(delta < 0, 0)
 
-            # First value is sum of gains or losses
-            avg_gain = gain.rolling(window=period).mean()
-            avg_loss = loss.rolling(window=period).mean()
+            # Calculate average gain and loss using Wilder's smoothing (typical for RSI)
+            # The .ewm(alpha=1/period, adjust=False) approach is common for Wilder's smoothing
+            avg_gain = gain.ewm(alpha=1/period, adjust=False).mean()
+            avg_loss = loss.ewm(alpha=1/period, adjust=False).mean()
 
-            # Check for division by zero
-            if (avg_loss == 0).any():
-                # Handle the case where avg_loss is zero (RSI = 100)
-                rs = pd.Series(index=avg_gain.index)
-                for i in range(len(avg_gain)):
-                    if avg_loss.iloc[i] == 0:
-                        if avg_gain.iloc[i] == 0:
-                            rs.iloc[i] = 0  # Both are zero, default to 0
-                        else:
-                            rs.iloc[i] = float('inf')  # Loss is zero, gain is non-zero
-                    else:
-                        rs.iloc[i] = avg_gain.iloc[i] / avg_loss.iloc[i]
-            else:
-                rs = avg_gain / avg_loss
 
-            result['rsi'] = 100 - (100 / (1 + rs))
+            # Calculate Relative Strength (RS)
+            # Handle division by zero by filling inf values with NaN
+            rs = avg_gain / avg_loss
+            rs = rs.replace([np.inf, -np.inf], np.nan) # Replace inf with NaN
+
+            # Calculate RSI
+            # Handle cases where avg_loss is 0 (RS is inf or NaN)
+            # If avg_loss is 0 and avg_gain > 0, RSI is 100
+            # If avg_loss is 0 and avg_gain is 0, RSI is 0 (or NaN depending on convention)
+            rsi = 100 - (100 / (1 + rs))
+
+            # Explicitly handle the case where avg_loss is 0 and avg_gain > 0
+            rsi[(avg_loss == 0) & (avg_gain > 0)] = 100
+             # Handle the case where both are 0 (or NaN/inf propagated) - often results in NaN or 0
+             # The default NaN propagation should handle most cases, but explicit handling can be added if needed
+             # For now, rely on default NaN behavior or adjust based on specific RSI definition
+
+            result['rsi'] = rsi
             return result
 
         except Exception as e:
@@ -247,7 +253,7 @@ class TechnicalIndicators:
                     )
                 raise ValueError(f"Column '{column}' not found in dataframe")
 
-            if period <= 0:
+            if period is None or not isinstance(period, int) or period <= 0:
                 if self.error_handler:
                     self.error_handler.handle_error(
                         ValueError(f"Period ({period}) must be a positive integer"),
@@ -261,7 +267,10 @@ class TechnicalIndicators:
             result['bb_std'] = result[column].rolling(window=period).std()
             result['bb_upper'] = result['bb_middle'] + (result['bb_std'] * num_std)
             result['bb_lower'] = result['bb_middle'] - (result['bb_std'] * num_std)
-            result['bb_width'] = (result['bb_upper'] - result['bb_lower']) / result['bb_middle']
+            # Handle division by zero for bb_width if bb_middle is zero (unlikely for prices)
+            bb_middle_safe = result['bb_middle'].replace(0, np.nan)
+            result['bb_width'] = (result['bb_upper'] - result['bb_lower']) / bb_middle_safe
+
             return result
 
         except Exception as e:
@@ -297,7 +306,7 @@ class TechnicalIndicators:
                     )
                 raise ValueError(f"Missing required columns: {missing_columns}")
 
-            if period <= 0:
+            if period is None or not isinstance(period, int) or period <= 0:
                 if self.error_handler:
                     self.error_handler.handle_error(
                         ValueError(f"Period ({period}) must be a positive integer"),
@@ -312,12 +321,13 @@ class TechnicalIndicators:
             close = result['close']
 
             # True Range calculation
+            # Use .shift(1) for previous close
             tr1 = high - low
-            tr2 = abs(high - close.shift())
-            tr3 = abs(low - close.shift())
+            tr2 = abs(high - close.shift(1))
+            tr3 = abs(low - close.shift(1))
 
             tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-            result['atr'] = tr.rolling(window=period).mean()
+            result['atr'] = tr.ewm(alpha=1/period, adjust=False).mean() # Use EWM for ATR smoothing
             return result
 
         except Exception as e:
@@ -354,7 +364,8 @@ class TechnicalIndicators:
                     )
                 raise ValueError(f"Missing required columns: {missing_columns}")
 
-            if k_period <= 0 or d_period <= 0:
+            if k_period is None or not isinstance(k_period, int) or k_period <= 0 or \
+               d_period is None or not isinstance(d_period, int) or d_period <= 0:
                 if self.error_handler:
                     self.error_handler.handle_error(
                         ValueError(f"Periods (k_period={k_period}, d_period={d_period}) must be positive integers"),
@@ -364,24 +375,27 @@ class TechnicalIndicators:
                     )
                 raise ValueError(f"Periods (k_period={k_period}, d_period={d_period}) must be positive integers")
 
+
             # %K calculation
             lowest_low = result['low'].rolling(window=k_period).min()
             highest_high = result['high'].rolling(window=k_period).max()
 
-            # Check for division by zero (when highest_high == lowest_low)
+            # Handle division by zero (when highest_high == lowest_low)
             denom = highest_high - lowest_low
             close_low_diff = result['close'] - lowest_low
 
             # Initialize %K with NaNs
             result['stoch_k'] = pd.Series(float('nan'), index=result.index)
 
-            # Set %K to 50 when denominator is zero (no price movement in the period)
-            # Otherwise calculate normally
+            # Calculate %K where denominator is not zero
             mask = denom != 0
             result.loc[mask, 'stoch_k'] = 100 * (close_low_diff[mask] / denom[mask])
-            result.loc[~mask, 'stoch_k'] = 50  # Set to middle value when no movement
 
-            # %D calculation (3-period SMA of %K)
+            # Handle the case where denom is zero (no price movement in the period)
+            # Set %K to 50 when denominator is zero as a convention
+            result.loc[~mask, 'stoch_k'] = 50
+
+            # %D calculation (d_period period SMA of %K)
             result['stoch_d'] = result['stoch_k'].rolling(window=d_period).mean()
             return result
 
@@ -420,7 +434,7 @@ class TechnicalIndicators:
                     )
                 raise ValueError(f"Missing required columns: {missing_columns}")
 
-            # Validate method parameter
+             # Validate method parameter
             valid_methods = ['standard', 'fibonacci', 'woodie', 'camarilla']
             if method not in valid_methods:
                 if self.error_handler:
@@ -432,81 +446,116 @@ class TechnicalIndicators:
                     )
                 raise ValueError(f"Invalid pivot point method: {method}. Valid options are {valid_methods}")
 
-            # Get high, low, close for pivot calculation (previous day)
-            high = result['high'].shift(1)
-            low = result['low'].shift(1)
-            close = result['close'].shift(1)
+            # Resample data to daily to get previous day's HLC
+            # This requires the input data to have a datetime index or a 'time' column
+            if 'time' in result.columns:
+                 # Make sure 'time' is the index for resampling
+                 temp_df = result.set_index('time')
+            elif isinstance(result.index, pd.DatetimeIndex):
+                 temp_df = result.copy()
+            else:
+                if self.error_handler:
+                    self.error_handler.handle_error(
+                        ValueError("Input DataFrame must have a 'time' column or DatetimeIndex for Pivot Points"),
+                        context,
+                        ErrorSeverity.HIGH,
+                        reraise=True
+                    )
+                raise ValueError("Input DataFrame must have a 'time' column or DatetimeIndex for Pivot Points")
 
-            if method == 'standard':
-                # Standard pivot points
-                pp = (high + low + close) / 3
-                s1 = (2 * pp) - high
-                s2 = pp - (high - low)
-                r1 = (2 * pp) - low
-                r2 = pp + (high - low)
 
-                result['pivot'] = pp
-                result['support1'] = s1
-                result['support2'] = s2
-                result['resistance1'] = r1
-                result['resistance2'] = r2
+            # Get the last OHLC of the previous day
+            # Use .iloc[-2] to get the *second* to last row (yesterday) after grouping
+            # and then get the values
+            ohlc_prev_day = temp_df.resample('D').agg({
+                'open': 'first',
+                'high': 'max',
+                'low': 'min',
+                'close': 'last'
+            }).dropna().iloc[:-1] # Drop the current incomplete day and any NaNs
 
-            elif method == 'fibonacci':
-                # Fibonacci pivot points
-                pp = (high + low + close) / 3
-                r1 = pp + 0.382 * (high - low)
-                r2 = pp + 0.618 * (high - low)
-                r3 = pp + (high - low)
-                s1 = pp - 0.382 * (high - low)
-                s2 = pp - 0.618 * (high - low)
-                s3 = pp - (high - low)
 
-                result['pivot'] = pp
-                result['support1'] = s1
-                result['support2'] = s2
-                result['support3'] = s3
-                result['resistance1'] = r1
-                result['resistance2'] = r2
-                result['resistance3'] = r3
+            if ohlc_prev_day.empty:
+                 # Not enough data for pivot points
+                 result['pivot'] = np.nan
+                 result['support1'] = np.nan
+                 result['support2'] = np.nan
+                 result['support3'] = np.nan # Fibonacci/Camarilla
+                 result['support4'] = np.nan # Camarilla
+                 result['resistance1'] = np.nan
+                 result['resistance2'] = np.nan
+                 result['resistance3'] = np.nan # Fibonacci/Camarilla
+                 result['resistance4'] = np.nan # Camarilla
+                 return result
 
-            elif method == 'woodie':
-                # Woodie pivot points
-                pp = (high + low + 2 * close) / 4
-                r1 = (2 * pp) - low
-                r2 = pp + (high - low)
-                s1 = (2 * pp) - high
-                s2 = pp - (high - low)
 
-                result['pivot'] = pp
-                result['support1'] = s1
-                result['support2'] = s2
-                result['resistance1'] = r1
-                result['resistance2'] = r2
+            # Map daily pivots back to the original high-frequency data
+            # Calculate pivots for each *day* based on the previous day's OHLC
+            daily_pivots = {}
+            for prev_day_time, row in ohlc_prev_day.iterrows():
+                h = row['high']
+                l = row['low']
+                c = row['close']
+                o = row['open'] # Needed for some methods (e.g., Woodie if using specific formula)
 
-            elif method == 'camarilla':
-                # Camarilla pivot points
-                pp = (high + low + close) / 3
-                range_val = high - low
+                if method == 'standard':
+                    pp = (h + l + c) / 3
+                    s1 = (2 * pp) - h
+                    s2 = pp - (h - l)
+                    r1 = (2 * pp) - l
+                    r2 = pp + (h - l)
+                    daily_pivots[prev_day_time + pd.Timedelta(days=1)] = {'pivot': pp, 'support1': s1, 'support2': s2, 'resistance1': r1, 'resistance2': r2}
 
-                r1 = close + range_val * 1.1 / 12
-                r2 = close + range_val * 1.1 / 6
-                r3 = close + range_val * 1.1 / 4
-                r4 = close + range_val * 1.1 / 2
+                elif method == 'fibonacci':
+                    pp = (h + l + c) / 3
+                    r1 = pp + 0.382 * (h - l)
+                    r2 = pp + 0.618 * (h - l)
+                    r3 = pp + (h - l)
+                    s1 = pp - 0.382 * (h - l)
+                    s2 = pp - 0.618 * (h - l)
+                    s3 = pp - (h - l)
+                    daily_pivots[prev_day_time + pd.Timedelta(days=1)] = {'pivot': pp, 'support1': s1, 'support2': s2, 'support3': s3, 'resistance1': r1, 'resistance2': r2, 'resistance3': r3}
 
-                s1 = close - range_val * 1.1 / 12
-                s2 = close - range_val * 1.1 / 6
-                s3 = close - range_val * 1.1 / 4
-                s4 = close - range_val * 1.1 / 2
+                elif method == 'woodie':
+                    # Note: Woodie's standard pivot often uses Open, High, Low, Twice Close / 4
+                    # Some variations exist. Using H, L, C as per your original code's structure intention
+                    pp = (h + l + 2 * c) / 4
+                    r1 = (2 * pp) - l
+                    r2 = pp + (h - l)
+                    s1 = (2 * pp) - h
+                    s2 = pp - (h - l)
+                     # Some Woodie definitions have additional levels (R3, S3 etc.) but using your original structure
+                    daily_pivots[prev_day_time + pd.Timedelta(days=1)] = {'pivot': pp, 'support1': s1, 'support2': s2, 'resistance1': r1, 'resistance2': r2}
 
-                result['pivot'] = pp
-                result['support1'] = s1
-                result['support2'] = s2
-                result['support3'] = s3
-                result['support4'] = s4
-                result['resistance1'] = r1
-                result['resistance2'] = r2
-                result['resistance3'] = r3
-                result['resistance4'] = r4
+                elif method == 'camarilla':
+                    pp = (h + l + c) / 3 # Camarilla often doesn't use PP directly, but calculate for consistency
+                    range_val = h - l
+                    r1 = c + range_val * 1.1 / 12
+                    r2 = c + range_val * 1.1 / 6
+                    r3 = c + range_val * 1.1 / 4
+                    r4 = c + range_val * 1.1 / 2
+                    s1 = c - range_val * 1.1 / 12
+                    s2 = c - range_val * 1.1 / 6
+                    s3 = c - range_val * 1.1 / 4
+                    s4 = c - range_val * 1.1 / 2
+                    daily_pivots[prev_day_time + pd.Timedelta(days=1)] = {'pivot': pp, 'support1': s1, 'support2': s2, 'support3': s3, 'support4': s4, 'resistance1': r1, 'resistance2': r2, 'resistance3': r3, 'resistance4': r4}
+
+
+            # Convert daily pivots dictionary to DataFrame
+            daily_pivots_df = pd.DataFrame.from_dict(daily_pivots, orient='index')
+            daily_pivots_df.index.name = 'day' # Index is the start of the day for which pivots are valid
+
+
+            # Merge daily pivots back to the original high-frequency data
+            # Need to map each timestamp in result to the start of its day to merge with daily_pivots_df
+            result['day'] = result['time'].dt.normalize() # Get the date part
+
+            # Use left merge to keep all rows from result and add pivot columns
+            result = pd.merge(result, daily_pivots_df, left_on='day', right_index=True, how='left')
+
+            # Drop the temporary 'day' column
+            result = result.drop(columns=['day'])
+
 
             return result
 
@@ -517,6 +566,91 @@ class TechnicalIndicators:
                 )
             raise
 
+    # --- CORRECTED calculate_cci METHOD ---
+    def calculate_cci(self, data: pd.DataFrame, period: int = 20) -> pd.DataFrame:
+        """Calculate Commodity Channel Index."""
+        context = self._get_error_context(
+            "calculate_cci",
+            {
+                "period": period,
+                "data_shape": str(data.shape) if data is not None else "None"
+            }
+        )
+
+        try:
+            if data is None or data.empty:
+                if self.error_handler:
+                    self.error_handler.handle_error(
+                        ValueError("Input DataFrame is None or empty"),
+                        context,
+                        ErrorSeverity.HIGH,
+                        reraise=True
+                    )
+                raise ValueError("Input DataFrame is None or empty")
+
+            result = data.copy()
+
+            # Validate required columns
+            required_columns = ['high', 'low', 'close']
+            missing_columns = [col for col in required_columns if col not in result.columns]
+            if missing_columns:
+                if self.error_handler:
+                    self.error_handler.handle_error(
+                        ValueError(f"Missing required columns: {missing_columns}"),
+                        context,
+                        ErrorSeverity.HIGH,
+                        reraise=True
+                    )
+                raise ValueError(f"Missing required columns: {missing_columns}")
+
+            if period is None or not isinstance(period, int) or period <= 0:
+                if self.error_handler:
+                    self.error_handler.handle_error(
+                        ValueError(f"Period ({period}) must be a positive integer"),
+                        context,
+                        ErrorSeverity.HIGH,
+                        reraise=True
+                    )
+                raise ValueError(f"Period ({period}) must be a positive integer")
+
+            # Calculate typical price
+            tp = (result['high'] + result['low'] + result['close']) / 3
+
+            # Calculate the simple moving average of the typical price
+            tp_sma = tp.rolling(window=period).mean()
+
+            # Calculate the mean deviation
+            # Use numpy to calculate Mean Absolute Deviation within the rolling window
+            # raw=True is generally more efficient when the lambda returns a scalar from numpy operations
+            mean_deviation = tp.rolling(window=period).apply(
+                lambda x: np.mean(np.abs(x - np.mean(x))), raw=True
+            )
+
+            # Calculate CCI
+            # Initialize the 'cci' column with NaN to correctly handle periods with insufficient data
+            result['cci'] = np.nan
+            # Create a mask where mean_deviation is not zero and not NaN
+            mask = (mean_deviation.notna()) & (mean_deviation != 0)
+
+            # Apply the CCI calculation only where the mask is True
+            result.loc[mask, 'cci'] = (tp[mask] - tp_sma[mask]) / (0.015 * mean_deviation[mask])
+
+            # Return the original dataframe with the new 'cci' column added
+            return result # Return the whole df, not just [['cci']]
+
+        except Exception as e:
+            if self.error_handler:
+                self.error_handler.handle_error(
+                    e, context, ErrorSeverity.HIGH, reraise=True
+                )
+            raise
+
+        # Assuming necessary imports (numpy, pandas, etc.) are at the top of the file
+        # Assuming _get_error_context and self.error_handler are defined in the class __init__
+
+# Assuming necessary imports (numpy, pandas, etc.) are at the top of the file
+    # Assuming _get_error_context and self.error_handler are defined in the class __init__
+
     def calculate_all_indicators(self, data: pd.DataFrame) -> pd.DataFrame:
         """Calculate all technical indicators with default parameters."""
         context = self._get_error_context(
@@ -525,160 +659,267 @@ class TechnicalIndicators:
         )
 
         try:
+            if data is None or data.empty:
+                 if self.error_handler:
+                    self.error_handler.handle_error(
+                        ValueError("Input DataFrame is None or empty"),
+                        context,
+                        ErrorSeverity.HIGH,
+                        reraise=True
+                    )
+                 raise ValueError("Input DataFrame is None or empty")
+
             result = data.copy()
 
-            # Calculate Moving Averages
+            # Calculate Moving Averages by calling the methods
+            # Ensure these methods exist in the TechnicalIndicators class
+            # and handle their own input validation/error handling.
             result = self.calculate_sma(result, periods=[5, 8, 13, 21, 50, 200])
             result = self.calculate_ema(result, periods=[5, 8, 13, 21, 50, 200])
             result = self.calculate_macd(result, fast_period=12, slow_period=26, signal_period=9)
 
-            # Calculate Volatility indicators
+            # Calculate Volatility indicators by calling the methods
+            # Ensure these methods exist in the TechnicalIndicators class
             result = self.calculate_bollinger_bands(result, period=20, num_std=2.0)
             result = self.calculate_atr(result, period=14)
 
-            # Calculate Momentum indicators
+            # Calculate Momentum indicators by calling the methods
+            # Ensure these methods exist in the TechnicalIndicators class
             result = self.calculate_rsi(result, period=14)
             result = self.calculate_stochastic(result, k_period=14, d_period=3)
 
-            # Calculate Pivot Points
+            # Calculate Pivot Points by calling the method
+            # Ensure this method exists in the TechnicalIndicators class and
+            # correctly handles the data frequency (e.g., resampling to daily).
             result = self.calculate_pivot_points(result, method="standard")
 
-            # Additional indicators that might be useful
+            # Calculate CCI by calling the method
+            # Ensure the corrected calculate_cci method exists at the class level.
+            result = self.calculate_cci(result, period=20) # <--- Call the corrected CCI method here
 
-            # Calculate Rate of Change (RoC)
-            periods = [5, 10, 20]
-            for period in periods:
-                result[f'roc_{period}'] = (result['close'] / result['close'].shift(period) - 1) * 100
+            # Add other indicators (implement methods for these if not already done, then call them)
+            # For now, keeping direct calculations based on your previous code structure.
+            # Ensure these direct calculations are free of errors and deprecated features.
 
-            # Calculate Average Directional Index (ADX)
-            period = 14
-            plus_dm = result['high'].diff()
-            minus_dm = result['low'].diff(-1).abs()
-            plus_dm[plus_dm < 0] = 0
-            minus_dm[minus_dm < 0] = 0
-            tr1 = (result['high'] - result['low']).abs()
-            tr2 = (result['high'] - result['close'].shift()).abs()
-            tr3 = (result['low'] - result['close'].shift()).abs()
-            tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-            atr = tr.rolling(window=period).mean()
-
-            # Handle division by zero for DI calculations
-            plus_di = pd.Series(0, index=result.index)
-            minus_di = pd.Series(0, index=result.index)
-
-            mask = atr > 0
-            plus_di[mask] = 100 * (plus_dm[mask].rolling(window=period).mean() / atr[mask])
-            minus_di[mask] = 100 * (minus_dm[mask].rolling(window=period).mean() / atr[mask])
-
-            # Handle division by zero for DX calculation
-            dx = pd.Series(0, index=result.index)
-            di_sum = plus_di.abs() + minus_di.abs()
-
-            mask = di_sum > 0
-            dx[mask] = 100 * ((plus_di[mask] - minus_di[mask]).abs() / di_sum[mask])
-
-            result['adx'] = dx.rolling(window=period).mean()
-            result['plus_di'] = plus_di
-            result['minus_di'] = minus_di
-
-            # Calculate Money Flow Index (MFI)
-            period = 14
-
-            if 'tick_volume' not in result.columns:
-                if self.error_handler:
-                    self.error_handler.handle_error(
-                        ValueError("Missing 'tick_volume' column required for MFI calculation"),
-                        context,
-                        ErrorSeverity.MEDIUM,
-                        reraise=False
-                    )
-                # Skip MFI calculation if volume data not available
+            # Calculate Rate of Change (RoC) - Example direct calculation
+            # Validate 'close' column exists
+            if 'close' in result.columns:
+                periods = [5, 10, 20]
+                for period in periods:
+                    if period is not None and isinstance(period, int) and period > 0:
+                         result[f'roc_{period}'] = (result['close'] / result['close'].shift(period) - 1) * 100
+                    else:
+                         # Replace print with self.logger.warning if logger is available
+                         print(f"Warning: Invalid period ({period}) for RoC calculation.")
             else:
-                typical_price = (result['high'] + result['low'] + result['close']) / 3
-                money_flow = typical_price * result['tick_volume']
-                positive_flow = pd.Series(0, index=result.index)
-                negative_flow = pd.Series(0, index=result.index)
+                # Replace print with self.logger.warning if logger is available
+                print(f"Warning: Cannot calculate RoC: Missing 'close' column.")
 
-                # Determine positive and negative flow
-                mask_pos = typical_price > typical_price.shift(1)
-                mask_neg = typical_price < typical_price.shift(1)
 
-                positive_flow[mask_pos] = money_flow[mask_pos]
-                negative_flow[mask_neg] = money_flow[mask_neg]
+            # Calculate Average Directional Index (ADX) - Example direct calculation
+            # Validate required columns
+            required_adx = ['high', 'low', 'close']
+            if all(col in result.columns for col in required_adx):
+                period = 14 # ADX period
+                # Ensure period is valid
+                if period is not None and isinstance(period, int) and period > 0:
+                    plus_dm = result['high'].diff()
+                    # Correct calculation for minus_dm absolute difference from previous low
+                    # Handle potential NaNs from shift
+                    low_shifted = result['low'].shift(1)
+                    minus_dm = (result['low'] - low_shifted).abs()
 
-                positive_mf = positive_flow.rolling(window=period).sum()
-                negative_mf = negative_flow.rolling(window=period).sum()
+                    # Filter out negative differences
+                    plus_dm[plus_dm < 0] = 0
+                    minus_dm[minus_dm < 0] = 0
 
-                # Handle division by zero
-                mfi = pd.Series(50, index=result.index)  # Default to neutral when no negative flow
+                    tr1 = (result['high'] - result['low']).abs()
+                    # Handle potential NaNs from shift
+                    close_shifted = result['close'].shift(1)
+                    tr2 = (result['high'] - close_shifted).abs()
+                    tr3 = (result['low'] - close_shifted).abs()
+                    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
 
-                mask = negative_mf > 0
-                money_ratio = positive_mf[mask] / negative_mf[mask]
-                mfi[mask] = 100 - (100 / (1 + money_ratio))
+                    # Use EWM smoothing for ATR within ADX calculation as per standard ADX
+                    # Handle potential division by zero if atr_adx is 0
+                    atr_adx = tr.ewm(alpha=1/period, adjust=False).mean()
+                    atr_adx_safe = atr_adx.replace(0, np.nan) # Replace 0 with NaN for safe division
 
-                # Special case - when positive_mf > 0 and negative_mf = 0
-                mask = (negative_mf == 0) & (positive_mf > 0)
-                mfi[mask] = 100
 
-                # Special case - when both are zero
-                mask = (negative_mf == 0) & (positive_mf == 0)
-                mfi[mask] = 50
+                    # Smoothed DM
+                    plus_smooth_dm = plus_dm.ewm(alpha=1/period, adjust=False).mean()
+                    minus_smooth_dm = minus_dm.ewm(alpha=1/period, adjust=False).mean()
 
-                result['mfi'] = mfi
 
-            # Calculate Commodity Channel Index (CCI)
-            period = 20
-            tp = (result['high'] + result['low'] + result['close']) / 3
-            tp_ma = tp.rolling(window=period).mean()
-            tp_dev = (tp - tp_ma).abs().rolling(window=period).mean()
+                    # Handle division by zero for DI calculations
+                    # Initialize with NaN and fill where denom is not NaN and > 0
+                    plus_di = pd.Series(np.nan, index=result.index)
+                    minus_di = pd.Series(np.nan, index=result.index)
 
-            # Handle division by zero
-            cci = pd.Series(0, index=result.index)
-            mask = tp_dev > 0
-            cci[mask] = (tp[mask] - tp_ma[mask]) / (0.015 * tp_dev[mask])
+                    mask_di = atr_adx_safe.notna() # Valid where smoothed ATR is not NaN
+                    plus_di[mask_di] = 100 * (plus_smooth_dm[mask_di] / atr_adx_safe[mask_di])
+                    minus_di[mask_di] = 100 * (minus_smooth_dm[mask_di] / atr_adx_safe[mask_di])
 
-            result['cci'] = cci
 
-            # Calculate Williams %R
-            periods = [14, 28]
-            for period in periods:
-                highest_high = result['high'].rolling(window=period).max()
-                lowest_low = result['low'].rolling(window=period).min()
+                    # Handle division by zero for DX calculation
+                    # Initialize with NaN
+                    dx = pd.Series(np.nan, index=result.index)
+                    di_sum = plus_di.abs() + minus_di.abs()
 
-                # Handle division by zero
-                williams_r = pd.Series(-50, index=result.index)
-                range_val = highest_high - lowest_low
+                    # Valid where sum is not NaN and > 0
+                    mask_dx = (di_sum > 0) & (di_sum.notna())
+                    dx[mask_dx] = 100 * ((plus_di[mask_dx] - minus_di[mask_dx]).abs() / di_sum[mask_dx])
 
-                mask = range_val > 0
-                williams_r[mask] = -100 * (highest_high[mask] - result['close'][mask]) / range_val[mask]
+                    # ADX is smoothed DX
+                    # Use EWM for final ADX smoothing
+                    result['adx'] = dx.ewm(alpha=1/period, adjust=False).mean()
+                    result['plus_di'] = plus_di
+                    result['minus_di'] = minus_di
+                else:
+                     # Replace print with self.logger.warning if logger is available
+                     print(f"Warning: Invalid period ({period}) for ADX calculation.")
+            else:
+                # Replace print with self.logger.warning if logger is available
+                print(f"Warning: Cannot calculate ADX: Missing required columns {required_adx}.")
 
-                result[f'williams_r_{period}'] = williams_r
 
-            # Calculate Ichimoku Cloud elements
-            tenkan_period = 9
-            kijun_period = 26
-            senkou_b_period = 52
+            # Calculate Money Flow Index (MFI) - Example direct calculation
+            # Validate required columns
+            required_mfi = ['high', 'low', 'close', 'tick_volume']
+            if all(col in result.columns for col in required_mfi):
+                period = 14 # MFI period
+                 # Ensure period is valid
+                if period is not None and isinstance(period, int) and period > 0:
+                    # Ensure tick_volume is numeric
+                    if not pd.api.types.is_numeric_dtype(result['tick_volume']):
+                         # Replace print with self.logger.warning/error if logger is available
+                         print("Error: 'tick_volume' is not numeric. Cannot calculate MFI.")
+                         # Skip MFI calculation
+                    else:
+                        typical_price = (result['high'] + result['low'] + result['close']) / 3
+                        # Handle potential NaNs in typical_price or tick_volume
+                        money_flow = typical_price * result['tick_volume']
 
-            # Tenkan-sen (Conversion Line)
-            result['ichimoku_tenkan_sen'] = (result['high'].rolling(window=tenkan_period).max() +
-                                             result['low'].rolling(window=tenkan_period).min()) / 2
+                        # Calculate Price Change for Direction - use .diff(1)
+                        price_change = typical_price.diff(periods=1)
 
-            # Kijun-sen (Base Line)
-            result['ichimoku_kijun_sen'] = (result['high'].rolling(window=kijun_period).max() +
-                                            result['low'].rolling(window=kijun_period).min()) / 2
+                        positive_flow = pd.Series(0.0, index=result.index) # Use float
+                        negative_flow = pd.Series(0.0, index=result.index) # Use float
 
-            # Senkou Span A (Leading Span A)
-            result['ichimoku_senkou_span_a'] = (
-                        (result['ichimoku_tenkan_sen'] + result['ichimoku_kijun_sen']) / 2).shift(
-                kijun_period)
+                        # Determine positive and negative flow based on price change
+                        # Use .loc for assignment based on boolean indexing
+                        positive_flow.loc[price_change > 0] = money_flow[price_change > 0]
+                        negative_flow.loc[price_change < 0] = money_flow[price_change < 0]
 
-            # Senkou Span B (Leading Span B)
-            result['ichimoku_senkou_span_b'] = ((result['high'].rolling(window=senkou_b_period).max() +
-                                                 result['low'].rolling(window=senkou_b_period).min()) / 2).shift(
-                kijun_period)
+                        # Calculate sums of positive and negative money flow over the period
+                        # Use .rolling().sum()
+                        positive_mf = positive_flow.rolling(window=period).sum()
+                        negative_mf = negative_flow.rolling(window=period).sum()
 
-            # Chikou Span (Lagging Span)
-            result['ichimoku_chikou_span'] = result['close'].shift(-kijun_period)
+                        # Calculate Money Ratio and MFI
+                        # Handle division by zero and edge cases
+                        money_ratio = pd.Series(np.nan, index=result.index)
+                        # Valid ratio calculation where negative_mf is not zero and not NaN
+                        mask_valid_ratio = (negative_mf != 0) & (negative_mf.notna())
+                        money_ratio[mask_valid_ratio] = positive_mf[mask_valid_ratio] / negative_mf[mask_valid_ratio]
+
+
+                        mfi = pd.Series(np.nan, index=result.index)
+                        # Standard calculation where money_ratio is valid and not NaN
+                        mask_mfi = money_ratio.notna()
+                        mfi[mask_mfi] = 100 - (100 / (1 + money_ratio[mask_mfi]))
+
+                        # Special case: negative_mf == 0 and positive_mf > 0 --> MFI = 100
+                        mask_mfi_100 = (negative_mf == 0) & (positive_mf > 0)
+                        mfi[mask_mfi_100] = 100
+
+                        # Special case: negative_mf == 0 and positive_mf == 0 --> MFI = 50 or NaN
+                        # Set to 50 where both rolled sums are 0
+                        mask_mfi_50 = (negative_mf == 0) & (positive_mf == 0)
+                        mfi[mask_mfi_50] = 50
+
+                        result['mfi'] = mfi
+
+                else:
+                     # Replace print with self.logger.warning if logger is available
+                     print(f"Warning: Invalid period ({period}) for MFI calculation.")
+            else:
+                # Replace print with self.logger.warning if logger is available
+                print(f"Warning: Cannot calculate MFI: Missing required columns {required_mfi}.")
+
+
+            # Calculate Williams %R - Example direct calculation
+            # Validate required columns
+            required_wpr = ['high', 'low', 'close']
+            if all(col in result.columns for col in required_wpr):
+                periods = [14, 28]
+                for period in periods:
+                    if period is not None and isinstance(period, int) and period > 0:
+                        highest_high = result['high'].rolling(window=period).max()
+                        lowest_low = result['low'].rolling(window=period).min()
+
+                        # Handle division by zero
+                        range_val = highest_high - lowest_low
+
+                        # Initialize with NaN
+                        williams_r = pd.Series(np.nan, index=result.index)
+
+                        # Calculate where range is not zero and not NaN
+                        mask = (range_val != 0) & (range_val.notna())
+                        williams_r[mask] = -100 * (highest_high[mask] - result['close'][mask]) / range_val[mask]
+
+                         # If range is 0 or NaN, it remains NaN due to initialization/mask
+
+                        result[f'williams_r_{period}'] = williams_r
+                    else:
+                         # Replace print with self.logger.warning if logger is available
+                         print(f"Warning: Invalid period ({period}) for Williams %R.")
+            else:
+                 # Replace print with self.logger.warning if logger is available
+                 print(f"Warning: Cannot calculate Williams %R: Missing required columns {required_wpr}.")
+
+
+            # Calculate Ichimoku Cloud elements - Example direct calculation
+            # Validate required columns
+            required_ichimoku = ['high', 'low', 'close']
+            if all(col in result.columns for col in required_ichimoku):
+                tenkan_period = 9
+                kijun_period = 26
+                senkou_b_period = 52
+                chikou_period = 26 # Lagging span period (shifts back)
+
+                # Ensure periods are valid
+                if (tenkan_period is not None and isinstance(tenkan_period, int) and tenkan_period > 0 and
+                    kijun_period is not None and isinstance(kijun_period, int) and kijun_period > 0 and
+                    senkou_b_period is not None and isinstance(senkou_b_period, int) and senkou_b_period > 0 and
+                    chikou_period is not None and isinstance(chikou_period, int) and chikou_period > 0):
+
+                    # Tenkan-sen (Conversion Line)
+                    result['ichimoku_tenkan_sen'] = (result['high'].rolling(window=tenkan_period).max() +
+                                                     result['low'].rolling(window=tenkan_period).min()) / 2
+
+                    # Kijun-sen (Base Line)
+                    result['ichimoku_kijun_sen'] = (result['high'].rolling(window=kijun_period).max() +
+                                                    result['low'].rolling(window=kijun_period).min()) / 2
+
+                    # Senkou Span A (Leading Span A) - Shift forward kijun_period
+                    # Handle potential division by zero if both tenkan and kijun sums are 0
+                    span_a_base = (result['ichimoku_tenkan_sen'] + result['ichimoku_kijun_sen']) / 2
+                    result['ichimoku_senkou_span_a'] = span_a_base.shift(kijun_period)
+
+                    # Senkou Span B (Leading Span B) - Shift forward senkou_b_period (standard)
+                    result['ichimoku_senkou_span_b'] = ((result['high'].rolling(window=senkou_b_period).max() +
+                                                         result['low'].rolling(window=senkou_b_period).min()) / 2).shift(senkou_b_period)
+
+                    # Chikou Span (Lagging Span) - Shift back chikou_period
+                    result['ichimoku_chikou_span'] = result['close'].shift(-chikou_period) # Negative shift goes backwards in index
+                else:
+                     # Replace print with self.logger.warning if logger is available
+                     print(f"Warning: Invalid period(s) for Ichimoku calculation.")
+            else:
+                 # Replace print with self.logger.warning if logger is available
+                 print(f"Warning: Cannot calculate Ichimoku: Missing required columns {required_ichimoku}.")
+
 
             return result
 

@@ -480,3 +480,188 @@ class DataProcessor:
                 reraise=True
             )
             raise
+
+    # Add to Processing/DataProcessor.py
+
+    def calculate_gold_specific_features(self, df: pd.DataFrame,
+                                         correlation_data: Dict[str, pd.DataFrame]) -> pd.DataFrame:
+        """Calculate gold-specific features like Gold/Silver ratio, USD correlation, etc."""
+        context = {
+            **self.error_context,
+            "operation": "calculate_gold_specific_features",
+            "df_shape": str(df.shape) if df is not None else "None",
+            "available_corr_data": str(list(correlation_data.keys()))
+        }
+
+        try:
+            result = df.copy()
+
+            # Calculate CCI if not already present
+            if 'cci' not in result.columns:
+                result = self.indicators.calculate_cci(result, period=20)
+                self.logger.info("Added CCI indicator to the dataset")
+
+            # Synchronize timestamps for correlation calculations
+            result_times = set(result['time'])
+
+            # Calculate Gold/Silver ratio if both are available
+            if "XAUUSD" in correlation_data and "XAGUSD" in correlation_data:
+                gold_df = correlation_data["XAUUSD"]
+                silver_df = correlation_data["XAGUSD"]
+
+                # Ensure we only work with matching timestamps
+                gold_df = gold_df[gold_df['time'].isin(result_times)]
+                silver_df = silver_df[silver_df['time'].isin(result_times)]
+
+                # Create a common index based on time
+                common_times = set(gold_df['time']).intersection(set(silver_df['time']))
+                gold_df = gold_df[gold_df['time'].isin(common_times)]
+                silver_df = silver_df[silver_df['time'].isin(common_times)]
+
+                # Ensure data is sorted by time
+                gold_df = gold_df.sort_values('time')
+                silver_df = silver_df.sort_values('time')
+
+                # Calculate Gold/Silver ratio
+                if not gold_df.empty and not silver_df.empty:
+                    # Create a DataFrame with time and ratio columns
+                    ratio_df = pd.DataFrame()
+                    ratio_df['time'] = gold_df['time']
+                    ratio_df['gold_silver_ratio'] = gold_df['close'] / silver_df['close']
+
+                    # Merge ratio with the main dataframe
+                    result = pd.merge(result, ratio_df, on='time', how='left')
+                    self.logger.info("Added Gold/Silver ratio to the dataset")
+
+            # Calculate USD Index correlation if available
+            if "USDX" in correlation_data:
+                usd_df = correlation_data["USDX"]
+
+                # Ensure we only work with matching timestamps
+                usd_df = usd_df[usd_df['time'].isin(result_times)]
+
+                if not usd_df.empty:
+                    # Create correlation features
+                    usd_corr_df = pd.DataFrame()
+                    usd_corr_df['time'] = usd_df['time']
+                    usd_corr_df['usd_index'] = usd_df['close']
+
+                    # Calculate USD returns
+                    usd_corr_df['usd_returns'] = usd_df['close'].pct_change()
+
+                    # Merge with the main dataframe
+                    result = pd.merge(result, usd_corr_df, on='time', how='left')
+
+                    # Calculate correlation between Gold and USD returns
+                    # (using rolling window for ongoing correlation)
+                    # First we need close returns for gold
+                    if 'close_pct_change' not in result.columns:
+                        result['close_pct_change'] = result['close'].pct_change()
+
+                    # Now calculate rolling correlation
+                    window_sizes = [5, 10, 20]
+                    for window in window_sizes:
+                        result[f'gold_usd_corr_{window}'] = result['close_pct_change'].rolling(window).corr(
+                            result['usd_returns'])
+
+                    self.logger.info("Added USD Index correlation features to the dataset")
+
+            # Calculate VIX relationship features if available
+            if "VIX" in correlation_data:
+                vix_df = correlation_data["VIX"]
+
+                # Ensure we only work with matching timestamps
+                vix_df = vix_df[vix_df['time'].isin(result_times)]
+
+                if not vix_df.empty:
+                    # Create VIX features
+                    vix_feature_df = pd.DataFrame()
+                    vix_feature_df['time'] = vix_df['time']
+                    vix_feature_df['vix'] = vix_df['close']
+
+                    # Add VIX returns
+                    vix_feature_df['vix_returns'] = vix_df['close'].pct_change()
+
+                    # Merge with the main dataframe
+                    result = pd.merge(result, vix_feature_df, on='time', how='left')
+
+                    # Calculate correlation between Gold and VIX
+                    if 'close_pct_change' not in result.columns:
+                        result['close_pct_change'] = result['close'].pct_change()
+
+                    # Calculate rolling correlation
+                    window_sizes = [5, 10, 20]
+                    for window in window_sizes:
+                        result[f'gold_vix_corr_{window}'] = result['close_pct_change'].rolling(window).corr(
+                            result['vix_returns'])
+
+                    self.logger.info("Added VIX relationship features to the dataset")
+
+            return result
+
+        except Exception as e:
+            self.error_handler.handle_error(
+                exception=e,
+                context=context,
+                severity=ErrorSeverity.HIGH,
+                reraise=True
+            )
+            raise
+
+    def process_raw_data(self, df: pd.DataFrame,
+                         correlation_data: Optional[Dict[str, pd.DataFrame]] = None) -> pd.DataFrame:
+        """Process raw data with technical indicators and gold-specific features."""
+        context = {
+            **self.error_context,
+            "operation": "process_raw_data",
+            "df_shape": str(df.shape) if df is not None else "None",
+            "has_correlation_data": correlation_data is not None
+        }
+
+        try:
+            if df.empty:
+                self.error_handler.handle_error(
+                    ValueError("Empty dataframe provided for processing"),
+                    context,
+                    ErrorSeverity.MEDIUM,
+                    reraise=True
+                )
+
+            self.logger.info(f"Processing {len(df)} rows of raw data")
+
+            # Make sure we have a proper copy to avoid modifying the original
+            processed_df = df.copy()
+
+            # Ensure time column is present and properly formatted
+            if 'time' not in processed_df.columns:
+                self.error_handler.handle_error(
+                    ValueError("Time column missing from input data"),
+                    context,
+                    ErrorSeverity.HIGH,
+                    reraise=True
+                )
+
+            processed_df['time'] = pd.to_datetime(processed_df['time'])
+
+            # Calculate all technical indicators based on configuration
+            processed_df = self.calculate_indicators(processed_df)
+
+            # Add gold-specific features if correlation data is available
+            if correlation_data:
+                processed_df = self.calculate_gold_specific_features(processed_df, correlation_data)
+                self.logger.info("Added gold-specific features to the dataset")
+
+            # Remove NaN values that come from indicators using windows
+            processed_df = self.handle_missing_values(processed_df)
+
+            self.logger.info(f"Data processing complete with {len(processed_df)} rows remaining")
+            return processed_df
+
+        except Exception as e:
+            self.error_handler.handle_error(
+                exception=e,
+                context=context,
+                severity=ErrorSeverity.HIGH,
+                reraise=True
+            )
+            raise

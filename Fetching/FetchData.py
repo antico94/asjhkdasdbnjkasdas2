@@ -7,6 +7,7 @@ from Utilities.ConfigurationUtils import Config
 from Utilities.LoggingUtils import Logger
 from Utilities.ErrorHandler import ErrorHandler, ErrorSeverity
 from Configuration.Constants import TimeFrames, CurrencyPairs
+from sqlalchemy import create_engine, text, MetaData, Table, Column, DateTime, Float, Integer
 
 
 class MT5DataFetcher:
@@ -17,7 +18,35 @@ class MT5DataFetcher:
         self.mt5_config = config.get('MetaTrader5', {})
         self.fetch_config = config.get('FetchingSettings', {})
         self.db_config = config.get('Database', {})
-        self.connected = False
+
+        # Initialize self.connected *before* calling methods that access error_context
+        self.connected = False # <--- Moved this line here
+
+        self.engine = self._create_engine() # This now safely calls _create_engine()
+        self.metadata = MetaData()
+
+    def _create_engine(self):
+        """Create SQLAlchemy engine for database connections."""
+        context = {
+            **self.error_context,
+            "operation": "_create_engine"
+        }
+
+        try:
+            db = self.db_config
+            connection_string = (
+                f"mssql+pyodbc://{db['User']}:{db['Password']}@{db['Host']},{db['Port']}/"
+                f"{db['Database']}?driver=ODBC+Driver+17+for+SQL+Server"
+            )
+            return create_engine(connection_string)
+        except Exception as e:
+            self.error_handler.handle_error(
+                exception=e,
+                context=context,
+                severity=ErrorSeverity.FATAL,
+                reraise=True
+            )
+            raise
 
     @property
     def error_context(self) -> Dict[str, Any]:
@@ -157,6 +186,18 @@ class MT5DataFetcher:
             df = pd.DataFrame(rates)
             df['time'] = pd.to_datetime(df['time'], unit='s')
 
+            # --- ADD THESE LINES TO EXPLICITLY CAST INTEGER TYPES ---
+            # Explicitly cast potential unsigned integer columns to signed int64
+            # Check if columns exist before casting, as real_volume might not always be present
+            if 'tick_volume' in df.columns:
+                df['tick_volume'] = df['tick_volume'].astype('int64')
+            if 'spread' in df.columns:
+                df['spread'] = df['spread'].astype('int64')
+            if 'real_volume' in df.columns:
+                # real_volume can be NaN if not available, cast to Int64 (nullable integer)
+                df['real_volume'] = df['real_volume'].astype('Int64')  # Use uppercase 'I' for nullable integer
+            # -------------------------------------------------------
+
             # Sort by time ascending
             df = df.sort_values('time')
             context["data_points"] = len(df)
@@ -280,34 +321,43 @@ class MT5DataFetcher:
         }
 
         try:
-            conn_str = self._build_connection_string()
             print(f"Connecting to database...")
-            with pyodbc.connect(conn_str) as conn:
-                cursor = conn.cursor()
 
-                # Clean up existing tables first
-                print(f"Removing existing data tables if present...")
-                self._clean_existing_tables(cursor, pair, timeframe)
+            # Clean up existing tables first
+            print(f"Removing existing data tables if present...")
+            self._clean_existing_tables(pair, timeframe)
 
-                # Create and populate tables for each split
-                total_rows = 0
-                for split_name, df in data_splits.items():
-                    table_name = f"{pair}_{timeframe.lower()}_{split_name}"
-                    context[f"table_{split_name}"] = table_name
+            # Create and populate tables for each split
+            total_rows = 0
+            for split_name, df in data_splits.items():
+                table_name = f"{pair}_{timeframe.lower()}_{split_name}"
+                context[f"table_{split_name}"] = table_name
 
-                    # Create table
-                    print(f"Creating table {table_name}...")
-                    self._create_table(cursor, table_name)
+                # Create table
+                print(f"Creating table {table_name}...")
+                self._create_table(table_name)
 
-                    # Insert data
-                    print(f"Inserting {len(df)} rows into {table_name}...")
-                    row_count = self._insert_data(cursor, table_name, df)
-                    self.logger.info(f"Inserted {row_count} rows into {table_name}")
-                    total_rows += row_count
+                # Insert data
+                print(f"Inserting {len(df)} rows into {table_name}...")
 
-                conn.commit()
-                print(f"Database operation complete. {total_rows} total rows inserted.")
-                return True
+                # Ensure datetime column is properly formatted
+                if 'time' in df.columns and not pd.api.types.is_datetime64_any_dtype(df['time']):
+                    df['time'] = pd.to_datetime(df['time'])
+
+                # Insert data using SQLAlchemy
+                df.to_sql(
+                    table_name,
+                    self.engine,
+                    if_exists='append',
+                    index=False,
+                    chunksize=1000
+                )
+
+                self.logger.info(f"Inserted {len(df)} rows into {table_name}")
+                total_rows += len(df)
+
+            print(f"Database operation complete. {total_rows} total rows inserted.")
+            return True
         except Exception as e:
             self.error_handler.handle_error(
                 exception=e,
@@ -317,7 +367,7 @@ class MT5DataFetcher:
             )
             return False
 
-    def _clean_existing_tables(self, cursor, pair: str, timeframe: str) -> None:
+    def _clean_existing_tables(self, pair: str, timeframe: str) -> None:
         context = {
             **self.error_context,
             "operation": "_clean_existing_tables",
@@ -331,8 +381,10 @@ class MT5DataFetcher:
             context["table_name"] = table_name
 
             try:
-                cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
-                self.logger.info(f"Dropped existing table {table_name}")
+                with self.engine.connect() as conn:
+                    conn.execute(text(f"DROP TABLE IF EXISTS {table_name}"))
+                    conn.commit()
+                    self.logger.info(f"Dropped existing table {table_name}")
             except Exception as e:
                 self.error_handler.handle_error(
                     exception=e,
@@ -341,7 +393,7 @@ class MT5DataFetcher:
                     reraise=False
                 )
 
-    def _create_table(self, cursor, table_name: str) -> None:
+    def _create_table(self, table_name: str) -> None:
         context = {
             **self.error_context,
             "operation": "_create_table",
@@ -349,18 +401,22 @@ class MT5DataFetcher:
         }
 
         try:
-            cursor.execute(f"""
-            CREATE TABLE {table_name} (
-                [time] DATETIME NOT NULL PRIMARY KEY,
-                [open] FLOAT NOT NULL,
-                [high] FLOAT NOT NULL,
-                [low] FLOAT NOT NULL,
-                [close] FLOAT NOT NULL,
-                tick_volume INT NOT NULL,
-                spread INT NOT NULL,
-                real_volume INT
+            # Define table using SQLAlchemy
+            market_data_table = Table(
+                table_name,
+                self.metadata,
+                Column("time", DateTime, primary_key=True),
+                Column("open", Float, nullable=False),
+                Column("high", Float, nullable=False),
+                Column("low", Float, nullable=False),
+                Column("close", Float, nullable=False),
+                Column("tick_volume", Integer, nullable=False),
+                Column("spread", Integer, nullable=False),
+                Column("real_volume", Integer, nullable=True)
             )
-            """)
+
+            # Create the table
+            self.metadata.create_all(self.engine, tables=[market_data_table])
         except Exception as e:
             self.error_handler.handle_error(
                 exception=e,
@@ -399,3 +455,129 @@ class MT5DataFetcher:
                 reraise=True
             )
             raise
+
+    # Add to Fetching/FetchData.py
+
+    def fetch_gold_silver_data(self, days: Optional[int] = None,
+                               timeframe: Optional[str] = None) -> Dict[str, pd.DataFrame]:
+        """Fetch both Gold and Silver data for correlation analysis"""
+        # Use provided parameters or defaults from config
+        days = days or self.fetch_config.get('DefaultTimeperiod', 2001)
+        timeframe = timeframe or self.fetch_config.get('DefaultTimeframe', TimeFrames.H1.value)
+
+        context = {
+            **self.error_context,
+            "operation": "fetch_gold_silver_data",
+            "days": days,
+            "timeframe": timeframe
+        }
+
+        self.logger.info(f"Fetching Gold and Silver data for {days} days, timeframe {timeframe}")
+        print(f"Fetching Gold and Silver data for correlation analysis...")
+
+        try:
+            # Convert timeframe string to MT5 timeframe
+            mt5_timeframe = self._get_mt5_timeframe(timeframe)
+            if not mt5_timeframe:
+                self.error_handler.handle_error(
+                    ValueError(f"Invalid timeframe: {timeframe}"),
+                    context,
+                    ErrorSeverity.MEDIUM,
+                    reraise=False
+                )
+                return {}
+
+            # Connect to MT5
+            print("Connecting to MT5...")
+            if not self.connect_to_mt5():
+                return {}
+
+            # Calculate time range
+            to_date = datetime.now()
+            from_date = to_date - timedelta(days=days)
+            context["from_date"] = from_date.isoformat()
+            context["to_date"] = to_date.isoformat()
+
+            results = {}
+
+            # Fetch Gold data
+            self.logger.info(f"Fetching XAUUSD from {from_date} to {to_date}")
+            print(f"Downloading XAUUSD data...")
+            gold_rates = mt5.copy_rates_range("XAUUSD", mt5_timeframe, from_date, to_date)
+
+            if gold_rates is None or len(gold_rates) == 0:
+                self.error_handler.handle_error(
+                    ValueError("No Gold data received from MT5"),
+                    context,
+                    ErrorSeverity.MEDIUM,
+                    reraise=False
+                )
+            else:
+                # Convert to DataFrame
+                gold_df = pd.DataFrame(gold_rates)
+                gold_df['time'] = pd.to_datetime(gold_df['time'], unit='s')
+                gold_df = gold_df.sort_values('time')
+                results["XAUUSD"] = gold_df
+
+            # Fetch Silver data
+            self.logger.info(f"Fetching XAGUSD from {from_date} to {to_date}")
+            print(f"Downloading XAGUSD data...")
+            silver_rates = mt5.copy_rates_range("XAGUSD", mt5_timeframe, from_date, to_date)
+
+            if silver_rates is None or len(silver_rates) == 0:
+                self.error_handler.handle_error(
+                    ValueError("No Silver data received from MT5"),
+                    context,
+                    ErrorSeverity.MEDIUM,
+                    reraise=False
+                )
+            else:
+                # Convert to DataFrame
+                silver_df = pd.DataFrame(silver_rates)
+                silver_df['time'] = pd.to_datetime(silver_df['time'], unit='s')
+                silver_df = silver_df.sort_values('time')
+                results["XAGUSD"] = silver_df
+
+            # Try to fetch USD Index if available in your broker (often as DXY or USDX)
+            try:
+                self.logger.info(f"Fetching USD Index from {from_date} to {to_date}")
+                print(f"Downloading USD Index data...")
+                usd_rates = mt5.copy_rates_range("USDX", mt5_timeframe, from_date, to_date)
+
+                if usd_rates is not None and len(usd_rates) > 0:
+                    usd_df = pd.DataFrame(usd_rates)
+                    usd_df['time'] = pd.to_datetime(usd_df['time'], unit='s')
+                    usd_df = usd_df.sort_values('time')
+                    results["USDX"] = usd_df
+            except Exception as e:
+                self.logger.warning(f"Failed to fetch USD Index: {e}")
+                print("USD Index not available or failed to fetch")
+
+            # Try to fetch VIX if available in your broker
+            try:
+                self.logger.info(f"Fetching VIX from {from_date} to {to_date}")
+                print(f"Downloading VIX data...")
+                vix_rates = mt5.copy_rates_range("VIX", mt5_timeframe, from_date, to_date)
+
+                if vix_rates is not None and len(vix_rates) > 0:
+                    vix_df = pd.DataFrame(vix_rates)
+                    vix_df['time'] = pd.to_datetime(vix_df['time'], unit='s')
+                    vix_df = vix_df.sort_values('time')
+                    results["VIX"] = vix_df
+            except Exception as e:
+                self.logger.warning(f"Failed to fetch VIX: {e}")
+                print("VIX not available or failed to fetch")
+
+            return results
+
+        except Exception as e:
+            self.error_handler.handle_error(
+                exception=e,
+                context=context,
+                severity=ErrorSeverity.HIGH,
+                reraise=False
+            )
+            return {}
+        finally:
+            print("Disconnecting from MT5...")
+            self.disconnect_from_mt5()

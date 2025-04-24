@@ -52,7 +52,7 @@ def main(
             elif action == AppMode.FETCH_DATA.value:
                 handle_fetch_data(cli, logger, error_handler, fetcher_factory)
             elif action == AppMode.PROCESS_DATA.value:
-                handle_process_data(cli, logger, error_handler, processor_factory)
+                handle_process_data(cli, logger, error_handler, processor_factory, fetcher_factory)
             else:
                 logger.info(f'Selected action: {action}')
 

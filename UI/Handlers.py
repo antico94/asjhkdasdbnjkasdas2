@@ -76,7 +76,8 @@ def handle_fetch_data(cli: TradingBotCLI,
 def handle_process_data(cli: TradingBotCLI,
                         logger: Logger,
                         error_handler: ErrorHandler,
-                        processor_factory: ProcessorFactory) -> None:
+                        processor_factory: ProcessorFactory,
+                        fetcher_factory: FetcherFactory) -> None:
     """Handle data processing flow"""
     context = {
         "function": "handle_process_data",
@@ -100,7 +101,7 @@ def handle_process_data(cli: TradingBotCLI,
 
                 # Process training, validation, and testing datasets for XAUUSD
                 process_datasets(processor, storage, logger, error_handler, "XAUUSD", "H1",
-                                 ["training", "validation", "testing"])
+                                 ["training", "validation", "testing"], fetcher_factory=fetcher_factory)
 
             elif process_action == "process_specific":
                 logger.info("Processing specific dataset")
@@ -121,7 +122,8 @@ def handle_process_data(cli: TradingBotCLI,
                         error_handler,
                         dataset_config['pair'],
                         dataset_config['timeframe'],
-                        [dataset_config['dataset_type']]
+                        [dataset_config['dataset_type']],
+                        fetcher_factory=fetcher_factory
                     )
                 else:
                     logger.info("Dataset selection cancelled")
@@ -137,7 +139,8 @@ def handle_process_data(cli: TradingBotCLI,
         print("An error occurred during data processing. Returning to main menu.")
 
 
-def process_datasets(processor, storage, logger, error_handler, pair, timeframe, dataset_types):
+
+def process_datasets(processor, storage, logger, error_handler, pair, timeframe, dataset_types, fetcher_factory: FetcherFactory):
     """Process multiple datasets and save to database"""
     context = {
         "function": "process_datasets",
@@ -147,19 +150,43 @@ def process_datasets(processor, storage, logger, error_handler, pair, timeframe,
         "dataset_types": str(dataset_types)
     }
 
+    # Only fetch correlation data for XAUUSD
+    correlation_data = {}
+    if pair == "XAUUSD":
+        try:
+            print("Fetching correlation data for gold-specific features...")
+            fetcher = fetcher_factory.create_mt5_fetcher()
+            correlation_data = fetcher.fetch_gold_silver_data(timeframe=timeframe)
+
+            if not correlation_data:
+                logger.warning("No correlation data available for gold-specific features")
+                print("No correlation data available. Processing will continue with standard features only.")
+            else:
+                logger.info(f"Fetched correlation data: {list(correlation_data.keys())}")
+                print(f"Successfully fetched correlation data for: {', '.join(correlation_data.keys())}")
+        except Exception as e:
+            logger.warning(f"Failed to fetch correlation data: {e}")
+            print("Failed to fetch correlation data. Processing will continue with standard features only.")
+
     for dataset_type in dataset_types:
         context["dataset_type"] = dataset_type
 
         try:
             print(f"Processing {dataset_type} data...")
 
-            # Use prepare_processed_data instead of prepare_dataset
-            processed_data = processor.prepare_processed_data(pair, timeframe, dataset_type)
+            # Get raw data
+            raw_data = processor.get_data_from_db(pair, timeframe, dataset_type)
 
-            if processed_data.empty:
+            if raw_data.empty:
                 logger.warning(f"No data found for {pair} {timeframe} {dataset_type}")
                 print(f"✗ No data found for {dataset_type}")
                 continue
+
+            # Process the data with gold-specific features if applicable
+            processed_data = processor.process_raw_data(raw_data, correlation_data if pair == "XAUUSD" else None)
+
+            # Create features
+            processed_data = processor.create_features(processed_data)
 
             # Log information about the processed data
             logger.info(f"Processed {len(processed_data)} rows for {pair} {timeframe} {dataset_type}")
@@ -168,19 +195,16 @@ def process_datasets(processor, storage, logger, error_handler, pair, timeframe,
             # Create dummy empty DataFrame for y to maintain compatibility with storage function
             dummy_y = pd.DataFrame()
 
-            # Extract 'time' column to preserve it
-            X = processed_data.copy()
-
             # Save processed data to database
             print(f"Saving processed data to database...")
             table_name = f"{pair}_{timeframe}_{dataset_type}_processed"
             context["table_name"] = table_name
 
-            db_success = storage.save_processed_data(X, dummy_y, pair, timeframe, dataset_type)
+            db_success = storage.save_processed_data(processed_data, dummy_y, pair, timeframe, dataset_type)
 
             if db_success:
-                print(f"✓ Successfully saved {len(X)} rows to {table_name}")
-                print(f"  - Dataset includes {len(X.columns)} features")
+                print(f"✓ Successfully saved {len(processed_data)} rows to {table_name}")
+                print(f"  - Dataset includes {len(processed_data.columns)} features")
             else:
                 print(f"✗ Failed to save data to database")
 
